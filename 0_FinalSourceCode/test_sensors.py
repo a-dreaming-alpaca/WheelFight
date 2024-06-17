@@ -28,7 +28,7 @@ try:
 
         # 2. 读取 6 个通道的 ADC 模拟量数据
         adc_status = []
-        for i in range(0, 6):
+        for i in range(0, 7):
             val = uptech.ADC_Get_Channel(i)
             adc_status.append(f"CH_{i}: {val:<4}") # <4 用于左对齐对齐格式
 
