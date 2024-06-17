@@ -209,10 +209,10 @@ class RemoteServer:
             return -1, "sensor read failed"
 
         raw_text = f"IO[0-3]={io_0},{io_1},{io_2},{io_3} AD[0-3]={ad_0},{ad_1},{ad_2},{ad_3}"
-        FD = 150
-        RD = 150
-        BD = 150
-        LD = 150
+        FD = 260
+        RD = 350
+        BD = 450
+        LD = 350
 
         if io_2 == 0 and io_1 == 1 and io_3 == 1 and ad_0 > FD and ad_1 < RD and ad_2 < BD and ad_3 < LD:
             return 1, raw_text
