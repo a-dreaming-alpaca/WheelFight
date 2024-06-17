@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from motion_controller import MotionController
 from robot_config import DEFAULT_CONFIG
-
+import time
 
 def run_selected_action(motion: MotionController) -> None:
     """Edit only the call below; tune all numeric values in robot_config.py."""
@@ -17,7 +17,9 @@ def run_selected_action(motion: MotionController) -> None:
     # )
     # motion.raise_shovel()
     # motion.lower_shovel()
-    motion.stop(force=True)
+    motion.move_cmd(500,-500)
+    time.sleep(0.9)
+    motion.move_cmd(0,0)
 
 
 def main() -> None:

@@ -27,10 +27,7 @@ IR_SENSOR_COUNT = 12
 
 class RobotState(str, Enum):
     BOOT_SELF_CHECK = "BOOT_SELF_CHECK"
-    WAIT_START_CLEAR = "WAIT_START_CLEAR"
-    WAIT_START_HANDS = "WAIT_START_HANDS"
-    WAIT_START_RELEASE = "WAIT_START_RELEASE"
-    START_RELEASE_DELAY = "START_RELEASE_DELAY"
+    WAIT_START_GESTURE = "WAIT_START_GESTURE"
     DEPLOY_SHOVEL = "DEPLOY_SHOVEL"
 
     GROUND_SEARCH = "GROUND_SEARCH"
@@ -75,10 +72,7 @@ ARENA_STATES = {
 
 PREMATCH_STATES = {
     RobotState.BOOT_SELF_CHECK,
-    RobotState.WAIT_START_CLEAR,
-    RobotState.WAIT_START_HANDS,
-    RobotState.WAIT_START_RELEASE,
-    RobotState.START_RELEASE_DELAY,
+    RobotState.WAIT_START_GESTURE,
     RobotState.DEPLOY_SHOVEL,
 }
 
@@ -342,10 +336,7 @@ class MatchController:
     ) -> DriveCommand:
         handlers = {
             RobotState.BOOT_SELF_CHECK: self._step_boot,
-            RobotState.WAIT_START_CLEAR: self._step_wait_start_clear,
-            RobotState.WAIT_START_HANDS: self._step_wait_start_hands,
-            RobotState.WAIT_START_RELEASE: self._step_wait_start_release,
-            RobotState.START_RELEASE_DELAY: self._step_start_release_delay,
+            RobotState.WAIT_START_GESTURE: self._step_wait_start_gesture,
             RobotState.DEPLOY_SHOVEL: self._step_deploy_shovel,
             RobotState.GROUND_SEARCH: self._step_ground_search,
             RobotState.ALIGN_REAR: self._step_align_rear,
@@ -373,61 +364,21 @@ class MatchController:
     def _step_boot(self, p, vision, now) -> DriveCommand:
         if p.platform_state != PlatformState.UNKNOWN:
             self._transition(
-                RobotState.WAIT_START_CLEAR, "stable Mega sensor data", now
+                RobotState.WAIT_START_GESTURE, "stable Mega sensor data", now
             )
         return DriveCommand(label="boot-stop")
 
-    def _step_wait_start_clear(self, p, vision, now) -> DriveCommand:
-        hands_clear = not p.start_left_hand_near and not p.start_right_hand_near
-        if self._held("start-clear", hands_clear, self.config.timing.start_clear_time, now):
-            self._transition(
-                RobotState.WAIT_START_HANDS, "start area sides are clear", now
-            )
-        return DriveCommand(label="wait-start-clear")
-
-    def _step_wait_start_hands(self, p, vision, now) -> DriveCommand:
+    def _step_wait_start_gesture(self, p, vision, now) -> DriveCommand:
         both_near = p.start_left_hand_near and p.start_right_hand_near
-        if self._held(
-            "start-hands",
-            both_near,
-            self.config.timing.start_hand_confirm_time,
-            now,
-        ):
-            self._transition(
-                RobotState.WAIT_START_RELEASE, "both start hands detected", now
-            )
-        elif self._state_elapsed(now) > self.config.timing.start_gesture_timeout and (
-            p.start_left_hand_near or p.start_right_hand_near
-        ):
-            self._transition(
-                RobotState.WAIT_START_CLEAR, "incomplete start gesture", now
-            )
-        return DriveCommand(label="wait-start-hands")
-
-    def _step_wait_start_release(self, p, vision, now) -> DriveCommand:
-        both_released = not p.start_left_hand_near and not p.start_right_hand_near
-        if self._held(
-            "start-release",
-            both_released,
-            self.config.timing.start_release_confirm_time,
-            now,
-        ):
+        if both_near:
             self.match_started = True
             self.match_start_time = now
-            self._transition(
-                RobotState.START_RELEASE_DELAY, "start hands released", now
-            )
-        elif self._state_elapsed(now) > self.config.timing.start_gesture_timeout:
-            self._transition(
-                RobotState.WAIT_START_CLEAR, "start release timeout", now
-            )
-        return DriveCommand(label="wait-start-release")
-
-    def _step_start_release_delay(self, p, vision, now) -> DriveCommand:
-        if self._state_elapsed(now) >= self.config.timing.start_release_delay:
             self.motion_controller.lower_shovel()
-            self._transition(RobotState.DEPLOY_SHOVEL, "deploy shovel", now)
-        return DriveCommand(label="start-hand-clearance-delay")
+            self._transition(
+                RobotState.DEPLOY_SHOVEL, "both start hands detected", now
+            )
+            return DriveCommand(label="start-triggered-stop")
+        return DriveCommand(label="wait-start-gesture")
 
     def _step_deploy_shovel(self, p, vision, now) -> DriveCommand:
         if self._state_elapsed(now) >= self.config.timing.shovel_settle_time:
@@ -860,7 +811,7 @@ class MatchController:
             now,
         ):
             if not self.match_started:
-                next_state = RobotState.WAIT_START_CLEAR
+                next_state = RobotState.WAIT_START_GESTURE
             elif p.platform_state == PlatformState.ON:
                 next_state = RobotState.ARENA_SEARCH
             elif p.platform_state == PlatformState.OFF:

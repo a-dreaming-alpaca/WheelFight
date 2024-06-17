@@ -11,8 +11,8 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class HardwareConfig:
-    left_motor_id: int = 2
-    right_motor_id: int = 1
+    left_motor_id: int = 1
+    right_motor_id: int = 2
     left_shovel_servo_id: int = 5
     right_shovel_servo_id: int = 6
     servo_mode: int = 0
@@ -37,8 +37,8 @@ class SensorConfig:
     # The response falls again inside roughly 10 cm, so these values still
     # require final on-robot calibration with every sensor installed.
     ir_near_is_high: bool = True
-    ir_detect_enter: int = 400
-    ir_detect_exit: int = 350
+    ir_detect_enter: int = 350
+    ir_detect_exit: int = 300
     # A frame with neither complete energy-block marker is enemy evidence only
     # when the centered ranging target is at least this close. This is
     # provisional and must be measured.
@@ -71,23 +71,23 @@ class SensorConfig:
 
 @dataclass(frozen=True)
 class MotionConfig:
-    search_turn_speed: int = 220
-    align_turn_speed: int = 180
-    fence_escape_forward_speed: int = 280
-    fence_escape_turn_speed: int = 240
-    platform_probe_speed: int = 180
-    climb_prepare_speed: int = 300
-    climb_speed: int = 800
-    climb_clear_speed: int = 350
-    arena_patrol_speed: int = 220
+    search_turn_speed: int = 500
+    align_turn_speed: int = 500
+    fence_escape_forward_speed: int = 300
+    fence_escape_turn_speed: int = 500
+    platform_probe_speed: int = 300
+    climb_prepare_speed: int = 600
+    climb_speed: int = 900
+    climb_clear_speed: int = 300
+    arena_patrol_speed: int = 600
     attack_speed: int = 700
     attack_min_speed: int = 350
-    push_gain_speed: int = 430
-    avoid_turn_speed: int = 320
-    avoid_depart_speed: int = 220
-    edge_reverse_speed: int = 380
-    edge_turn_speed: int = 320
-    partial_recover_speed: int = 320
+    push_gain_speed: int = 500
+    avoid_turn_speed: int = 500
+    avoid_depart_speed: int = 200
+    edge_reverse_speed: int = 500
+    edge_turn_speed: int = 500
+    partial_recover_speed: int = 500
     target_turn_gain: float = 4.0
 
 
@@ -99,16 +99,11 @@ class TimingConfig:
     # Mega receiver thread timing; separate from the controller's stale-data
     # warning and emergency-stop thresholds above.
     sensor_read_timeout: float = 0.10
-    sensor_reconnect_interval: float = 1.0
+    sensor_reconnect_interval: float = 1.00
     camera_stale_after: float = 0.25
     status_publish_interval: float = 0.10
-    match_duration: float = 120.0
+    match_duration: float = 100000.0
 
-    start_clear_time: float = 0.50
-    start_hand_confirm_time: float = 0.10
-    start_gesture_timeout: float = 2.00
-    start_release_confirm_time: float = 0.10
-    start_release_delay: float = 0.40
     shovel_settle_time: float = 0.60
 
     ground_candidate_confirm: float = 0.10
@@ -117,16 +112,16 @@ class TimingConfig:
     align_timeout: float = 4.0
     platform_verify_time: float = 0.12
     platform_probe_timeout: float = 0.60
-    climb_prepare_forward_time: float = 0.30
+    climb_prepare_forward_time: float = 0.70
     climb_prepare_settle_time: float = 0.08
     fence_escape_forward_time: float = 0.40
-    fence_escape_turn_time: float = 0.55
+    fence_escape_turn_time: float = 1.15
     climb_timeout: float = 2.20
     climb_clear_stable_time: float = 0.20
     climb_clear_timeout: float = 1.20
 
     target_center_confirm_time: float = 0.08
-    target_align_timeout: float = 3.0
+    target_align_timeout: float = 3.00
     target_classify_timeout: float = 0.80
     target_lost_grace: float = 0.25
     attack_timeout: float = 2.50
@@ -138,8 +133,8 @@ class TimingConfig:
 
     edge_stop_time: float = 0.06
     edge_reverse_time: float = 0.28
-    edge_turn_time: float = 0.50
-    edge_recover_timeout: float = 1.40
+    edge_turn_time: float = 0.70
+    edge_recover_timeout: float = 3.00
     partial_recover_timeout: float = 1.20
     fault_recover_time: float = 0.50
     stuck_timeout: float = 2.00
