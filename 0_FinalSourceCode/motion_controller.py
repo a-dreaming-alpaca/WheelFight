@@ -106,7 +106,50 @@ class MotionController:
         time.sleep(0.5)
 
     #搁浅动作
+    def slip_left(self):
+        self.move_cmd(-650,650)
+        self.uptech.CDS_SetAngle(7, 194, 800)
+        self.uptech.CDS_SetAngle(8, 830, 800)
+        time.sleep(0.01)
+        self.uptech.CDS_SetAngle(7, 194, 800)
+        self.uptech.CDS_SetAngle(8, 830, 800)
+        time.sleep(1.5)
+        self.default_platform()
+        self.move_cmd(-550, -550)
+
+    def slip_right(self):
+        self.move_cmd(650,-650)
+        self.uptech.CDS_SetAngle(7, 194, 800)
+        self.uptech.CDS_SetAngle(8, 830, 800)
+        time.sleep(0.01)
+        self.uptech.CDS_SetAngle(7, 194, 800)
+        self.uptech.CDS_SetAngle(8, 830, 800)
+        time.sleep(1.5)
+        self.default_platform()
+        self.move_cmd(-550, -550)
     
+    def slip_front(self):
+        # 支后爪，把后半身撑起来
+        self.move_cmd(550, 550)
+        self.pack_up_behind()
+        time.sleep(0.7)
+        # 恢复成默认上台动作
+        self.default_platform()
+        time.sleep(0.2)
+        self.move_cmd(0, 0)
+        time.sleep(0.5)
+    
+    def slip_back(self):
+        # 支前爪，把前半身撑起来
+        self.move_cmd(-550, -550)
+        time.sleep(0.2)
+        self.pack_up_ahead()
+        time.sleep(0.7)
+        # 默认上台
+        self.default_platform()
+        time.sleep(0.2)
+        self.move_cmd(0, 0)
+        time.sleep(0.5)
 
     # 我跳舞
     def dance_routine(self, loops=3):
