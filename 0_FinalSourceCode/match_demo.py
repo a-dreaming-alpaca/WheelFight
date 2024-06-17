@@ -81,7 +81,7 @@ class Match_demo:
         self.camera_activate = True
         while self.camera_activate:
             try:
-                cap = cv2.VideoCapture(0)
+                cap = cv2.VideoCapture(1)
                 if not cap.isOpened():
                     raise RuntimeError ("attempt to connect camera")
                 else:
@@ -354,8 +354,8 @@ class Match_demo:
         '''
         freeSpeed = 550 #漫游擂台、旋转速度 
         enemySpeed = 800 #检测到敌人速度
-        turn = 0.9   #左右有物块/敌人旋转90度时间延迟为0.5s
-        turn_180 = 1.8 #后方有物块/敌人旋转180度时间延迟为1s
+        turn = 0.7   #左右有物块/敌人旋转90度时间延迟为0.5s
+        turn_180 = 1.2 #后方有物块/敌人旋转180度时间延迟为1s
 
 
         self.motion_controller.default_platform()
