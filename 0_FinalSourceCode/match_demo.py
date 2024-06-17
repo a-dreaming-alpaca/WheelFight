@@ -79,16 +79,18 @@ class Match_demo:
     def apriltag_detect_thread(self):
         print("detect start")
         self.camera_activate = True
+        VideoCaptureIndex = 0
         while self.camera_activate:
             try:
-                cap = cv2.VideoCapture(1)
+                cap = cv2.VideoCapture(VideoCaptureIndex)
                 if not cap.isOpened():
-                    raise RuntimeError ("attempt to connect camera")
+                    VideoCaptureIndex = 1
+                    raise RuntimeError (f"attempt to connect camera")
                 else:
                     self.camera_activate = True 
                     print("camera connected succesfully")
             except RuntimeError as e:
-                print("cannot connect camera")
+                print(f"cannot connect camera {VideoCaptureIndex}")
 
             while True:
                 
@@ -259,6 +261,9 @@ class Match_demo:
         ad_0 = self.uptech.ADC_Get_Channel(0) #前方测距值
         ad_2 = self.uptech.ADC_Get_Channel(2) #后方测距值
         
+        ad_4 = self.uptech.ADC_Get_Channel(4) #前方灰度
+        ad_5 = self.uptech.ADC_Get_Channel(5) #后方灰度
+
         if io_4 == 0 and io_5 == 0 and io_6 == 0 and io_7 == 0:
             # 四个红外光电都没有检测到边缘,离擂台边缘都很远
             return 0
@@ -292,6 +297,8 @@ class Match_demo:
         elif io_4 == 1 and io_5 == 1 and io_6 == 1 and io_7 == 1 and ad_2 > 700:
             # 卡台搁浅在擂台边缘，其中前方在擂台上，后方在擂台下
             return 10
+
+
         else:
             return 102            
     # 敌人检测
@@ -539,7 +546,7 @@ class Match_demo:
                         ad_1 = self.uptech.ADC_Get_Channel(1)
                          # 前方触发，左侧没触发，右侧离得足够远,说明转过来了，前进
                         if io_0 ==0 and ad_1 < self.RD and i0_3 ==1:
-                            time.sleep(0.2)
+                            time.sleep(0.01)
                             self.motion_controller.move_cmd(freeSpeed, freeSpeed)
                             time.sleep(0.3)
                             break
@@ -573,7 +580,7 @@ class Match_demo:
                     # 右侧有敌人，先后退然后右转朝向敌人
                     if enemy == 2:
                         self.motion_controller.move_cmd(-freeSpeed, -freeSpeed)
-                        time.sleep(0.1)
+                        time.sleep(0.3)
                         self.motion_controller.move_cmd(freeSpeed, -freeSpeed)
                         time.sleep(turn)
                         
@@ -585,7 +592,7 @@ class Match_demo:
                     # 左侧有敌人，先后退然后右转
                     if enemy == 4:
                         self.motion_controller.move_cmd(-freeSpeed, -freeSpeed)
-                        time.sleep(0.2)
+                        time.sleep(0.3)
                         self.motion_controller.move_cmd(-freeSpeed, freeSpeed)
                         time.sleep(turn)
                         
