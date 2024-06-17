@@ -24,33 +24,8 @@ class MotionController:
 
     # 速度指令,参数分别为左速度和右速度，自由控制-开环控制器
     def move_cmd(self, left_speed = 0, right_speed = 0):
-    # 校正参数表
-        CALIB_MAP = {
-            300: 1.207,
-            400: 1.162,
-            500: 1.104,
-            600: 1.042,
-            700: 1.017,
-            800: 0.988
-        }
-        A, B, C, D = 1.037, -1.9325, 1.9772, -0.0848
-        sign = 0
-        if right_speed < 0:
-            sign = -1
-        else:
-            sign = 1
-        if right_speed == 0:
-            pass
-        elif abs(right_speed) in CALIB_MAP:
-            cal = CALIB_MAP[abs(right_speed)]
-            right_speed = int(right_speed * cal)
-            right_speed = abs(right_speed)
-        else:
-            s = abs(right_speed / 1000)
-            right_speed = int(1000 * (A * s ** 3 + B * s ** 2 + C * s + D))
-            
-        self.uptech.CDS_SetSpeed(1, left_speed)
-        self.uptech.CDS_SetSpeed(2, - sign * right_speed)
+        self.uptech.CDS_SetSpeed(2, left_speed)
+        self.uptech.CDS_SetSpeed(1, -right_speed)
 
     # 默认为前后爪都收起的状态
     def default_platform(self):
@@ -88,7 +63,7 @@ class MotionController:
         self.default_platform()
         time.sleep(0.2)
         #前进0.7s，这时前方已经顶住擂台边缘
-        self.move_cmd(400, 400)
+        self.move_cmd(500, 500)
         time.sleep(1)
         # 支前爪,把前半身撑起来
         self.pack_up_ahead()
@@ -113,7 +88,7 @@ class MotionController:
         self.default_platform()
         time.sleep(0.2)
         # 后退0.7s，这时后方已经顶住擂台边缘
-        self.move_cmd(-400, -400)
+        self.move_cmd(-500, -500)
         time.sleep(1)
         # 支后爪，把后半身撑起来
         self.pack_up_behind()

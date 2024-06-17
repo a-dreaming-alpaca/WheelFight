@@ -254,8 +254,7 @@ class Match_demo:
         io_4 =self.uptech.ADC_IO_GetInputLevel(4) #左前
         io_5 =self.uptech.ADC_IO_GetInputLevel(5) #右前
         io_6 =self.uptech.ADC_IO_GetInputLevel(6) #右后
-        # io_7 =self.uptech.ADC_IO_GetInputLevel(7) #左后
-        io_7 = 0
+        io_7 =self.uptech.ADC_IO_GetInputLevel(7) #左后
 
         ad_0 = self.uptech.ADC_Get_Channel(0) #前方测距值
         ad_2 = self.uptech.ADC_Get_Channel(2) #后方测距值
@@ -353,7 +352,7 @@ class Match_demo:
         速度与旋转时间根据自身构型情况进行修改，保证速度与时间匹配能够正确旋转90度
         或180度
         '''
-        freeSpeed = 400 #漫游擂台、旋转速度 
+        freeSpeed = 550 #漫游擂台、旋转速度 
         enemySpeed = 800 #检测到敌人速度
         turn = 0.6   #左右有物块/敌人旋转90度时间延迟为0.5s
         turn_180 = 1.3 #后方有物块/敌人旋转180度时间延迟为1s
