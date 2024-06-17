@@ -9,7 +9,7 @@ from urllib.parse import urlparse, parse_qs
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from motion_controller import MotionController
-from match_demo import Match_demo
+from match_demo import match_demo
 HOST = "0.0.0.0"
 PORT = 8000
 
@@ -159,7 +159,6 @@ class RemoteHandler(BaseHTTPRequestHandler):
 class RemoteServer:
     def __init__(self):
         self.controller = MotionController()
-        self.match = Match_demo()
         try:
             self.controller.uptech.ADC_IO_Open()
         except Exception as exc:
@@ -253,14 +252,14 @@ class RemoteServer:
 
         raw_text = f"红外IO[0-7]=前：{io_0},右：{io_1},后：{io_2},左：{io_3},\n 左前：{io_4},右前：{io_5},右后：{io_6},左后：{io_7} \n 红外AD[0-3]=前：{ad_0},右：{ad_1},后：{ad_2},左：{ad_3}, \n 灰度前：{ad_4},灰度后：{ad_5}"
         
-        return self.match.fence_detect(), raw_text
+        return match_demo.fence_detect(), raw_text
 
     def _poll_status(self):
         while True:
             fence_code, raw_text = self.fence_detect()
-            edge_code = self.match.edge_detect()
-            enemy_code = self.match.enemy_detect()
-            stage_code = self.match.paltform_detect()
+            edge_code = match_demo.edge_detect()
+            enemy_code = match_demo.enemy_detect()
+            stage_code = match_demo.paltform_detect()
             if fence_code != self.last_fence_code:
                 self.last_fence_code = fence_code
                 print(f"Fence state changed: {fence_code} | {raw_text}")

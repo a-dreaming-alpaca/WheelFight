@@ -392,7 +392,7 @@ class Match_demo:
                         ad_1 = self.uptech.ADC_Get_Channel(1)
                         # 前方触发，左侧没触发，右侧离得足够远,说明转过来了，前进
                         if io_0 ==0 and ad_1 < self.RD and i0_3 == 1:
-                            time.sleep(0.2)
+                            time.sleep(0.01)
                             self.motion_controller.move_cmd(freeSpeed, freeSpeed)
                             time.sleep(0.3)
                             break
@@ -416,7 +416,7 @@ class Match_demo:
                         ad_3 = self.uptech.ADC_Get_Channel(3)
                         # 前方触发，右侧没触发，左侧离得足够远,说明转过来了，前进
                         if io_0 == 0 and ad_3 < self.LD and i0_1 == 1:
-                            time.sleep(0.2)
+                            time.sleep(0.01)
                             self.motion_controller.move_cmd(freeSpeed, freeSpeed)
                             time.sleep(0.3)
                             break   
@@ -483,7 +483,7 @@ class Match_demo:
                         ad_3 = self.uptech.ADC_Get_Channel(3)
                          # 前方触发，右侧没触发，左侧离得足够远,说明转过来了，前进
                         if io_0 == 0 and ad_3 < self.LD and i0_1 == 1:
-                            time.sleep(0.2)
+                            time.sleep(0.01)
                             self.motion_controller.move_cmd(freeSpeed, freeSpeed)
                             time.sleep(0.3)
                             break
@@ -504,7 +504,7 @@ class Match_demo:
                         ad_1 = self.uptech.ADC_Get_Channel(1)
                         # 前方触发，左侧没触发，右侧离得足够远,说明转过来了，前进
                         if io_0 == 0 and ad_1 < self.RD and i0_3 == 1:
-                            time.sleep(0.2)
+                            time.sleep(0.01)
                             self.motion_controller.move_cmd(freeSpeed, freeSpeed)
                             time.sleep(0.3)
                             break
@@ -525,7 +525,7 @@ class Match_demo:
                         ad_3 = self.uptech.ADC_Get_Channel(3)
                          # 前方触发，右侧没触发，左侧离得足够远,说明转过来了，前进
                         if io_0 == 0 and ad_3 < self.LD and i0_1 == 1:
-                            time.sleep(0.2)
+                            time.sleep(0.01)
                             self.motion_controller.move_cmd(freeSpeed, freeSpeed)
                             time.sleep(0.3)
                             break
@@ -712,10 +712,9 @@ class Match_demo:
                     self.motion_controller.move_cmd(freeSpeed, freeSpeed)
                     time.sleep(0.01)        
          
+match_demo = Match_demo()
 
 if __name__ == '__main__':
-
-    match_demo = Match_demo() 
     match_demo.start_match()
 
 """

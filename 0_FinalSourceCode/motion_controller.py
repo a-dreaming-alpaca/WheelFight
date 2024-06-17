@@ -63,11 +63,11 @@ class MotionController:
         self.default_platform()
         time.sleep(0.2)
         #前进0.7s，这时前方已经顶住擂台边缘
-        self.move_cmd(500, 500)
+        self.move_cmd(550, 550)
         time.sleep(1)
         # 支前爪,把前半身撑起来
         self.pack_up_ahead()
-        time.sleep(0.7)
+        time.sleep(0.9)
         # 收起前爪
         self.default_platform()
         time.sleep(0.2)
@@ -88,11 +88,11 @@ class MotionController:
         self.default_platform()
         time.sleep(0.2)
         # 后退0.7s，这时后方已经顶住擂台边缘
-        self.move_cmd(-500, -500)
+        self.move_cmd(-550, -550)
         time.sleep(1)
         # 支后爪，把后半身撑起来
         self.pack_up_behind()
-        time.sleep(0.7)
+        time.sleep(0.9)
         # 收起前爪
         self.default_platform()
         # 支前爪，把前半身撑起来
@@ -104,6 +104,9 @@ class MotionController:
         time.sleep(0.2)
         self.move_cmd(0, 0)
         time.sleep(0.5)
+
+    #搁浅动作
+    
 
     # 我跳舞
     def dance_routine(self, loops=3):
