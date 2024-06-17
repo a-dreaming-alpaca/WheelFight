@@ -54,6 +54,7 @@ HTML_PAGE = """<!DOCTYPE html>
       <div class="status">Edge code: <span id="edge">--</span></div>
       <div class="status">Enemy code: <span id="enemy">--</span></div>
       <div class="status">Stage code: <span id="stage">--</span></div>
+      <div class="status">Slip code: <span id="slip">--</span></div>
       <div class="status">当前指令: <span id="current_cmd">--</span></div>
       <div>Sensor raw:</div>
       <div id="sensors">--</div>
@@ -92,6 +93,7 @@ HTML_PAGE = """<!DOCTYPE html>
           document.getElementById('edge').innerText = data.edge_code;
           document.getElementById('enemy').innerText = data.enemy_code;
           document.getElementById('stage').innerText = data.stage_code;
+          document.getElementById('slip').innerText = data.slip_code;
           document.getElementById('sensors').innerText = data.raw_text;
           document.getElementById('current_cmd').innerText = data.current_command || '--';
         })
@@ -168,13 +170,15 @@ class RemoteServer:
         self.last_edge_code = None
         self.last_enemy_code = None
         self.last_stage_code = None
+        self.last_slip_code = None
         self.current_command = "--"
         self.controller.uptech.ADC_IO_SetAllIOMode(0)
         self.fence_status = {
             "fence_code": -1,
             "edge_code": -1,
             "enemy_code": -1,
-            "stage_coee": -1,
+            "stage_code": -1,
+            "slip_code": -1,
             "raw_text": "--",
             "current_command": self.current_command,
         }
@@ -260,6 +264,7 @@ class RemoteServer:
             edge_code = match_demo.edge_detect()
             enemy_code = match_demo.enemy_detect()
             stage_code = match_demo.paltform_detect()
+            slip_code = match_demo.slip_detect()
             if fence_code != self.last_fence_code:
                 self.last_fence_code = fence_code
                 print(f"Fence state changed: {fence_code} | {raw_text}")
@@ -269,14 +274,19 @@ class RemoteServer:
             if enemy_code != self.last_enemy_code:
                 self.last_enemy_code = enemy_code
                 print(f"Enemy state changed: {enemy_code}")
-            if stage_code != self.last_edge_code:
+            if stage_code != self.last_stage_code:
                 self.last_stage_code = stage_code
+                print(f"Enemy state changed: {stage_code}")
+            if slip_code != self.last_slip_code:
+                self.last_slip_code = slip_code
+                print(f"Enemy state changed: {slip_code}")
 
             self.fence_status = {
                 "fence_code": fence_code,
                 "edge_code": edge_code,
                 "enemy_code": enemy_code,
                 "stage_code": stage_code,
+                "slip_code": slip_code,
                 "raw_text": raw_text,
                 "current_command": self.current_command,
             }

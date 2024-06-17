@@ -159,6 +159,9 @@ class Match_demo:
         if ad_4 + ad_5 > 7000 :
             # 灰度值较大在台下
             return 0
+        elif (ad_4 <= 3500) != (ad_5 <= 3500):
+            # 搁浅状态
+            return 2
         else:
             # 灰度值较小在台上
             return 1
@@ -260,9 +263,6 @@ class Match_demo:
 
         ad_0 = self.uptech.ADC_Get_Channel(0) #前方测距值
         ad_2 = self.uptech.ADC_Get_Channel(2) #后方测距值
-        
-        ad_4 = self.uptech.ADC_Get_Channel(4) #前方灰度
-        ad_5 = self.uptech.ADC_Get_Channel(5) #后方灰度
 
         if io_4 == 0 and io_5 == 0 and io_6 == 0 and io_7 == 0:
             # 四个红外光电都没有检测到边缘,离擂台边缘都很远
@@ -354,6 +354,30 @@ class Match_demo:
             # 其他情况
             return 103
     
+    def slip_detect(self):
+        io_4 = self.uptech.ADC_IO_GetInputLevel(4) #左前
+        io_5 = self.uptech.ADC_IO_GetInputLevel(5) #右前
+        io_6 = self.uptech.ADC_IO_GetInputLevel(6) #右后
+        io_7 = self.uptech.ADC_IO_GetInputLevel(7) #左后
+
+        ad_4 = self.uptech.ADC_Get_Channel(4) # 前方灰度
+        ad_5 = self.uptech.ADC_Get_Channel(5) # 后方灰度
+
+        # 左侧在台下
+        if io_4 == 1 and io_7 == 1 and io_5 == 0 and io_6 == 0:
+            return 0
+        # 右侧在台下
+        elif io_5 == 1 and io_6 == 1 and io_4 == 0 and io_7 == 0:
+            return 1
+        # 前侧在台下
+        elif ad_5 < 3500:
+            return 2
+        # 后侧在台下
+        elif ad_4 < 3500:
+            return 3
+        else:
+            return 105
+
     def start_match(self):
         '''
         速度与旋转时间根据自身构型情况进行修改，保证速度与时间匹配能够正确旋转90度
@@ -373,6 +397,10 @@ class Match_demo:
             stage = self.paltform_detect()
             print(f"Stage:{stage}")
             #在台下
+            stun_time = 0
+            fenceX = self.fence_detect()
+            if fenceX != 101:
+                stun_time = 0
             if stage == 0: 
                 print("在台下")
                 fence = self.fence_detect()
@@ -398,7 +426,7 @@ class Match_demo:
                             break
                         else:
                             # 否则一直左转
-                            self.motion_controller.move_cmd(-freeSpeed, freeSpeed)
+                            self.motion_controller.move_cmd(-freeSpeed+50, freeSpeed-50)
                             time.sleep(0.01)
                 # 前方对擂台
                 if fence == 3:
@@ -422,7 +450,7 @@ class Match_demo:
                             break   
                         else:
                             # 否则一直右转
-                            self.motion_controller.move_cmd(freeSpeed, -freeSpeed)
+                            self.motion_controller.move_cmd(freeSpeed-50, -freeSpeed+50)
                             time.sleep(0.01)
                 # 前左检测到围栏
                 if fence == 5:
@@ -483,13 +511,12 @@ class Match_demo:
                         ad_3 = self.uptech.ADC_Get_Channel(3)
                          # 前方触发，右侧没触发，左侧离得足够远,说明转过来了，前进
                         if io_0 == 0 and ad_3 < self.LD and i0_1 == 1:
-                            time.sleep(0.01)
                             self.motion_controller.move_cmd(freeSpeed, freeSpeed)
                             time.sleep(0.3)
                             break
                         # 否则一直右转
                         else:
-                            self.motion_controller.move_cmd(freeSpeed, -freeSpeed)
+                            self.motion_controller.move_cmd(freeSpeed-50, -freeSpeed+50)
                             time.sleep(0.01)
                 #  前左检测到擂台
                 if fence == 16:
@@ -510,7 +537,7 @@ class Match_demo:
                             break
                         # 否则一直左转
                         else:
-                            self.motion_controller.move_cmd(-freeSpeed, freeSpeed)
+                            self.motion_controller.move_cmd(-freeSpeed+50, freeSpeed-50)
                             time.sleep(0.01)
                 # 在台下，后方和右侧对擂台其他传感器没检测到
                 if fence == 17:
@@ -531,7 +558,7 @@ class Match_demo:
                             break
                         # 否则一直右转
                         else:
-                            self.motion_controller.move_cmd(freeSpeed, -freeSpeed)
+                            self.motion_controller.move_cmd(freeSpeed-50, -freeSpeed+50)
                             time.sleep(0.01)
                 # 在台下，后方和左侧对擂台其他传感器没检测到
                 if fence == 18:
@@ -552,18 +579,23 @@ class Match_demo:
                             break
                         # 否则一直左转
                         else:
-                            self.motion_controller.move_cmd(-freeSpeed, freeSpeed)
+                            self.motion_controller.move_cmd(-freeSpeed+50, freeSpeed-50)
                             time.sleep(0.01)
                 if fence == 101:
                     self.motion_controller.move_cmd(freeSpeed, -freeSpeed)
-                    time.sleep(3.3)
-                    self.motion_controller.move_cmd(freeSpeed, freeSpeed)
+                    time.sleep(0.1)
+                    stun_time += 0.1
+                    if stun_time > 3.3:
+                        self.motion_controller.move_cmd(freeSpeed, freeSpeed)
+                        time.sleep(0.5)
+                        stun_time = 0
 
             if stage == 1 :
                 print("在台上")
                     # 检测边缘
                 edge = self.edge_detect()
-                        
+                io_0 = self.uptech.ADC_IO_GetInputLevel(0)
+
                 # 四个边缘检测的红外光电都没有检测到擂台边缘
                 if edge == 0:
                     enemy = self.enemy_detect()
@@ -582,11 +614,11 @@ class Match_demo:
                         self.motion_controller.move_cmd(-freeSpeed, -freeSpeed)
                         time.sleep(0.3)
                         self.motion_controller.move_cmd(freeSpeed, -freeSpeed)
-                        time.sleep(turn)
-                        
+                        time.sleep(0.5)
+
                     # 后方有敌人，左转
                     if enemy == 3:
-                        self.motion_controller.move_cmd(-freeSpeed, freeSpeed)
+                        self.motion_controller.move_cmd(freeSpeed, -freeSpeed)
                         time.sleep(turn_180)
                         
                     # 左侧有敌人，先后退然后右转
@@ -594,13 +626,13 @@ class Match_demo:
                         self.motion_controller.move_cmd(-freeSpeed, -freeSpeed)
                         time.sleep(0.3)
                         self.motion_controller.move_cmd(-freeSpeed, freeSpeed)
-                        time.sleep(turn)
+                        time.sleep(0.3)
                         
                     # 自家物块，绕着走
                     if enemy == 5:
                         print("开始绕")
                         self.motion_controller.move_cmd(-freeSpeed, -freeSpeed)
-                        time.sleep(0.2)
+                        time.sleep(0.5)
                         self.motion_controller.move_cmd(-freeSpeed, freeSpeed)
                         time.sleep(turn_180)
                         self.motion_controller.move_cmd(freeSpeed, freeSpeed)
@@ -614,41 +646,41 @@ class Match_demo:
                 # 左前检测到边缘，先后退，然后右转一点
                 if edge == 1:
                         self.motion_controller.move_cmd(-freeSpeed, -freeSpeed)
-                        time.sleep(0.4)
+                        time.sleep(0.8)
                         self.motion_controller.move_cmd(freeSpeed, -freeSpeed)
                         time.sleep(turn)
                             
                 # 右前检测到边缘，先后退，然后左转一点
                 if edge == 2:
                         self.motion_controller.move_cmd(-freeSpeed, -freeSpeed)
-                        time.sleep(0.4)
+                        time.sleep(0.8)
                         self.motion_controller.move_cmd(-freeSpeed, freeSpeed)
-                        time.sleep(0.3)
+                        time.sleep(turn)
                             
                 # 右后检测到边缘，先前进，然后左转一点
                 if edge == 3:
                     self.motion_controller.move_cmd(freeSpeed, freeSpeed)
-                    time.sleep(0.5)
+                    time.sleep(0.8)
                     self.motion_controller.move_cmd(-freeSpeed, freeSpeed)
                     time.sleep(turn)
                             
                 # 左后检测到边缘，先前进，然后右转一点
                 if edge == 4:
                     self.motion_controller.move_cmd(freeSpeed, freeSpeed)
-                    time.sleep(0.5)
+                    time.sleep(0.8)
                     self.motion_controller.move_cmd(freeSpeed, -freeSpeed)
                     time.sleep(turn)
                             
                 # 前方两个检测到边缘，后退，然后右转
                 if edge == 5:
-                    self.motion_controller.move_cmd(-500, -500)
-                    time.sleep(0.7)
-                    self.motion_controller.move_cmd(500, -500)
-                    time.sleep(0.3)
+                    self.motion_controller.move_cmd(-freeSpeed, -freeSpeed)
+                    time.sleep(0.8)
+                    self.motion_controller.move_cmd(freeSpeed, -freeSpeed)
+                    time.sleep(turn)
                             
                 # 后方两个检测到边缘，前进
                 if edge == 6:
-                    self.motion_controller.move_cmd(500, 500)
+                    self.motion_controller.move_cmd(freeSpeed, freeSpeed)
                     time.sleep(0.5)
                             
                 # 左侧两个检测到边缘，先右转再前进
@@ -664,54 +696,35 @@ class Match_demo:
                     time.sleep(0.5)
                     self.motion_controller.move_cmd(freeSpeed, freeSpeed)
                     time.sleep(0.3)
-                            
-                # 搁浅卡台了，头朝下，后退上台动作
-                if edge == 9:
-                    self.nd += 1
-                    if self.nd > 80:
-                        self.nd = 0
-                        self.motion_controller.move_cmd(0, 0)
-                        time.sleep(0.01)
-                        self.motion_controller.move_cmd(-500, -500)
-                        time.sleep(0.2)
-                        self.motion_controller.go_up_behind_platform()
-                        self.motion_controller.move_cmd(-500, -500)
-                        time.sleep(0.8)
-                        self.motion_controller.default_platform()
-                        self.motion_controller.move_cmd(-500, -500)
-                        time.sleep(0.5)
-                        self.motion_controller.move_cmd(500, -500)
-                        time.sleep(0.3)
-                        self.motion_controller.move_cmd(0, 0)
-                        time.sleep(0.1)
-                    else:
-                        time.sleep(0.02)
-                        
-                # 搁浅卡台了，头朝上，前进上台动作      
-                if edge == 10:
-                    self.ne += 1
-                    if self.ne > 80:
-                        self.ne = 0
-                        self.motion_controller.move_cmd(0, 0)
-                        time.sleep(0.01)
-                        self.motion_controller.move_cmd(500, 500)
-                        time.sleep(0.2)
-                        self.motion_controller.go_up_ahead_platform()
-                        self.motion_controller.move_cmd(500, 500)
-                        time.sleep(0.8)
-                        self.motion_controller.default_platform()
-                        self.motion_controller.move_cmd(500, 500)
-                        time.sleep(0.4)
-                        self.motion_controller.move_cmd(0, 0)
-                        time.sleep(0.1)
-                    else:
-                        time.sleep(0.02)
-                
-                # 其他情况，默认前进，直到进入别的状态                
+
+                   # 其他情况，默认前进，直到进入别的状态                
                 if edge == 102:
+                    self.motion_controller.move_cmd(freeSpeed, -freeSpeed)
+                    time.sleep(0.01)   
+
+            if stage == 2:
+                slip = self.slip_detect()
+                # 左侧台下，右转倒车
+                if slip == 0:
+                    self.motion_controller.slip_right()
+
+                # 右侧台下，左转
+                if slip == 1:
+                    self.motion_controller.slip_left()
+
+                # 前侧台下，后上台
+                if slip == 2:
+                    self.motion_controller.slip_back()
+
+                # 后侧台下，前上台
+                if slip == 3:
+                    self.motion_controller.slip_front()
+                
+                # 其他情况
+                if slip == 105:
                     self.motion_controller.move_cmd(freeSpeed, freeSpeed)
-                    time.sleep(0.01)        
-         
+                    time.sleep(0.01)
+
 match_demo = Match_demo()
 
 if __name__ == '__main__':

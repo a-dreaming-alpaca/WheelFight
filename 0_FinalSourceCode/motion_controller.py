@@ -116,6 +116,7 @@ class MotionController:
         time.sleep(1.5)
         self.default_platform()
         self.move_cmd(-550, -550)
+        time.sleep(1)
 
     def slip_right(self):
         self.move_cmd(650,-650)
@@ -127,6 +128,7 @@ class MotionController:
         time.sleep(1.5)
         self.default_platform()
         self.move_cmd(-550, -550)
+        time.sleep(1)
     
     def slip_front(self):
         # 支后爪，把后半身撑起来
