@@ -291,11 +291,11 @@ def main():
             sr = bot.ADC_IO_GetInputLevel(1)
             
             # 循迹/避障控制逻辑
-            if sl <= 500 and sr <= 500:
+            if sl == 1 and sr == 1:
                 move_forward(300)
-            elif sl > 500 and sr > 500:
+            elif sl == 0 and sr == 0:
                 back_forward(300)
-            elif sr > 500:
+            elif sr == 0:
                 turn_left(300)
             else:
                 turn_right(300)
