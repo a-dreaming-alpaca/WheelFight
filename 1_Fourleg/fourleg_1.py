@@ -7,7 +7,7 @@ bot = UpTech()
 
 def init_motor():
     # 对应原 C 代码中初始化 1-10 号舵机模式
-    for i in range(1, 1):
+    for i in range(1, 10):
         bot.CDS_SetMode(i, bot.CDS_MODE_SERVO)
     
     # 将 1-9 号舵机归位
