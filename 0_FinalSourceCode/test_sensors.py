@@ -14,12 +14,10 @@ uptech.ADC_IO_Open()
 # 设置 IO 模式为输入模式 (0)
 for i in range(0, 8):
     uptech.ADC_IO_SetIOMode(i, 0)
-
 print("==================================================")
-print("        UpTech 传感器数据实时监控程序             ")
-print("          ( 按 Ctrl + C 退出 )              ")
+print("            UpTech 传感器数据实时监控程序            ")
+print("               ( 按 Ctrl + C 退出 )               ")
 print("==================================================")
-
 try:
     while True:
         # 1. 读取 8 个通道的 IO 电平状态
