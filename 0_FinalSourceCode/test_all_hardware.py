@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 '''
@@ -23,6 +24,8 @@ uptech.ADC_IO_Close()
 
 #测试舵机
 motion_controller.default_platform()
+time.sleep(0.5)
+motion_controller.dance_routine()
 
 #测试电机
 motion_controller.move_cmd(300, 300)

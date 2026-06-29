@@ -104,3 +104,34 @@ class MotionController:
         time.sleep(1)
         self.move_cmd(0, 0)
         time.sleep(0.5)
+
+    # 我跳舞
+    def dance_routine(self, loops=3):
+        
+        dance_speed = 300 
+        
+        # 定义基准角度
+        base_5, base_8 = 424, 424
+        base_6, base_7 = 600, 600
+        
+        # 定义微调幅度
+        offset = 80 
+
+        for _ in range(loops):
+            # ---------------- 姿态 A：左前右后抬起，右前左后落下 ----------------
+            self.uptech.CDS_SetAngle(5, base_5 + offset, dance_speed) # 5号臂微抬
+            self.uptech.CDS_SetAngle(6, base_6 + offset, dance_speed) # 6号臂微落
+            self.uptech.CDS_SetAngle(7, base_7 - offset, dance_speed) # 7号臂微抬
+            self.uptech.CDS_SetAngle(8, base_8 - offset, dance_speed) # 8号臂微落
+            time.sleep(0.6)
+
+            # ---------------- 姿态 B：左前右后落下，右前左后抬起 ----------------
+            self.uptech.CDS_SetAngle(5, base_5 - offset, dance_speed) # 5号臂微落
+            self.uptech.CDS_SetAngle(6, base_6 - offset, dance_speed) # 6号臂微抬
+            self.uptech.CDS_SetAngle(7, base_7 + offset, dance_speed) # 7号臂微落
+            self.uptech.CDS_SetAngle(8, base_8 + offset, dance_speed) # 8号臂微抬
+            time.sleep(0.6)
+
+        # 恢复到默认收起姿态
+        self.default_platform()
+        time.sleep(0.5)
