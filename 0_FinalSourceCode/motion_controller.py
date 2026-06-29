@@ -33,6 +33,11 @@ class MotionController:
         self.uptech.CDS_SetAngle(6, 600, self.servo_speed)
         self.uptech.CDS_SetAngle(7, 600, self.servo_speed)
         self.uptech.CDS_SetAngle(8, 424, self.servo_speed)
+        time.sleep(0.01)
+        self.uptech.CDS_SetAngle(5, 424, self.servo_speed)
+        self.uptech.CDS_SetAngle(6, 600, self.servo_speed)
+        self.uptech.CDS_SetAngle(7, 600, self.servo_speed)
+        self.uptech.CDS_SetAngle(8, 424, self.servo_speed)
 
     # 支撑前爪,发两遍确认发送成功
     def pack_up_ahead(self):

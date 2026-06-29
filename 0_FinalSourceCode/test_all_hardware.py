@@ -2,9 +2,17 @@ import os
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from uptech import UpTech
-uptech = UpTech()
+'''
+本程序用于测试硬件连接
+'''
 
+from uptech import UpTech
+from motion_controller import MotionController
+
+uptech = UpTech()
+motion_controller = MotionController()
+
+#测试传感器
 uptech.ADC_IO_Open()
 for i in range(0, 8):
     uptech.ADC_IO_SetIOMode(i, 0)
@@ -13,23 +21,19 @@ for i in range(0,6):
     print(uptech.ADC_Get_Channel(i))
 uptech.ADC_IO_Close()
 
+#测试舵机
+motion_controller.default_platform()
 
-uptech.CDS_Open()
-for i in range(5, 9):
-    if not uptech.CDS_SetMode(i, 0):
-         print("Servo not right")
-         break
+#测试电机
+motion_controller.move_cmd(300, 300)
+input('按Enter停止')
+motion_controller.move_cmd(0, 0)
 
 
-def move_cmd(left_speed, right_speed):
-        uptech.CDS_SetSpeed(1, left_speed)
-        uptech.CDS_SetSpeed(2, -right_speed)
- 
-move_cmd(300, 300)
-input()
-move_cmd(0, 0)
 
-uptech.CDS_Close()
+
+
+
 
 
 
