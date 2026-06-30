@@ -11,9 +11,9 @@ motion_controller = MotionController()
 
 #测试向前爬坡
 motion_controller.go_up_behind_platform()
+
 '''
 motion_controller.move_cmd_400(400, 400)
 input()
 motion_controller.move_cmd_400(0, 0)
-
 '''

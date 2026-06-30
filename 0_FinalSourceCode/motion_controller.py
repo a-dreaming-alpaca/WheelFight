@@ -12,7 +12,7 @@ class MotionController:
 
         self.uptech.CDS_Open()
         time.sleep(0.5)
-        self.servo_speed = 700
+        self.servo_speed = 800
         self.uptech.CDS_SetMode(3, 0)
         self.uptech.CDS_SetMode(4, 0)
         self.uptech.CDS_SetMode(5, 0)
@@ -29,7 +29,7 @@ class MotionController:
             self.uptech.CDS_SetSpeed(1, 0)
             self.uptech.CDS_SetSpeed(2, 0)
 
-        elif abs(speed) == 300 :
+        elif abs(speed) == 300:
             right_speed = int(speed * 1.207)
             self.uptech.CDS_SetSpeed(1, speed)
             self.uptech.CDS_SetSpeed(2, -right_speed)
