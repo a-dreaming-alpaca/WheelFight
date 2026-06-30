@@ -24,27 +24,41 @@ class MotionController:
 
     # 速度指令,参数分别为左速度和右速度，自由控制-开环控制器
     def move_cmd(self, left_speed = 0, right_speed = 0):
-
-        self.uptech.CDS_SetSpeed(1, left_speed)
-
         if right_speed == 0:
             self.uptech.CDS_SetSpeed(2, 0)
 
         elif abs(right_speed) == 300:
-            right_speed= int(right_speed * 1.207)
-            self.uptech.CDS_SetSpeed(2, -right_speed)
+            right_speed = int(right_speed * 1.207)
 
         elif abs(right_speed) == 400:
-            right_speed= int(right_speed * 1.15)
-            self.uptech.CDS_SetSpeed(2, -right_speed)
-            
+            right_speed = int(right_speed * 1.162)
+
+        elif abs(right_speed) == 500:
+            right_speed = int(right_speed * 1.104)
+        
+        elif abs(right_speed) == 600:
+            right_speed = int(right_speed * 1.042)
+
+        elif abs(right_speed) == 700:
+            right_speed = int(right_speed * 1.017)
+
+        elif abs(right_speed) == 800:
+            right_speed = int(right_speed * 0.988)
+
+        else:
+            r = right_speed / 1000
+            right_speed = 1000 * (1.037 * r ** 3 - 1.9325 * r ** 2 + 1.9772 * r - 0.0848)
+
+        self.uptech.CDS_SetSpeed(1, left_speed)
+        self.uptech.CDS_SetSpeed(2, -right_speed)
+
     def move_cmd_300(self, left_speed, right_speed):
         right_speed = int(right_speed * 1.207)
         self.uptech.CDS_SetSpeed(1, left_speed)
         self.uptech.CDS_SetSpeed(2, -right_speed)
     
     def move_cmd_400(self, left_speed, right_speed):
-        right_speed = int(right_speed * 1.15)
+        right_speed = int(right_speed * 1.162)
         self.uptech.CDS_SetSpeed(1, left_speed)
         self.uptech.CDS_SetSpeed(2, -right_speed)
 

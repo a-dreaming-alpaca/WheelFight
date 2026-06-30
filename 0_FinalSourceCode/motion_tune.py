@@ -10,10 +10,9 @@ uptech = UpTech()
 motion_controller = MotionController()
 
 #测试向前爬坡
-motion_controller.go_up_behind_platform()
+#motion_controller.go_up_behind_platform()
 
-'''
-motion_controller.move_cmd_400(400, 400)
+
+motion_controller.move_cmd(500, 500)
 input()
-motion_controller.move_cmd_400(0, 0)
-'''
+motion_controller.move_cmd(0, 0)
