@@ -82,22 +82,22 @@ class MotionController:
         time.sleep(0.1)
         # 前后支撑爪抬起
         self.default_platform()
-        time.sleep(0.4)
+        time.sleep(0.2)
         #前进0.7s，这时前方已经顶住擂台边缘
         self.move_cmd(400, 400)
-        time.sleep(1.2)
+        time.sleep(1)
         # 支前爪,把前半身撑起来
         self.pack_up_ahead()
-        time.sleep(1)
+        time.sleep(0.5)
         # 收起前爪
         self.default_platform()
         time.sleep(0.3)
         # 支后爪，把后半身撑起来
         self.pack_up_behind()
-        time.sleep(0.8)
+        time.sleep(0.6)
         # 恢复成默认上台动作
         self.default_platform()
-        time.sleep(1)
+        time.sleep(0.1)
         self.move_cmd(0, 0)
         time.sleep(0.5)
 
@@ -107,22 +107,22 @@ class MotionController:
         time.sleep(0.1)
         # 前后支撑爪抬起
         self.default_platform()
-        time.sleep(0.4)
+        time.sleep(0.2)
         # 后退0.7s，这时后方已经顶住擂台边缘
         self.move_cmd(-400, -400)
-        time.sleep(1.2)
+        time.sleep(1)
         # 支后爪，把后半身撑起来
         self.pack_up_behind()
-        time.sleep(1)
+        time.sleep(0.5)
         # 收起前爪
         self.default_platform()
         # 支前爪，把前半身撑起来
         time.sleep(0.3)
         self.pack_up_ahead()
-        time.sleep(0.8)
+        time.sleep(0.6)
         # 默认上台
         self.default_platform()
-        time.sleep(1)
+        time.sleep(0.1)
         self.move_cmd(0, 0)
         time.sleep(0.5)
 
