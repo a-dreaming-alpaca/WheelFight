@@ -23,25 +23,21 @@ class MotionController:
         self.uptech.CDS_SetMode(12, 0)  
 
     # 速度指令,参数分别为左速度和右速度，自由控制-开环控制器
-    def move_cmd(self, speed = 0):
+    def move_cmd(self, left_speed = 0, right_speed = 0):
 
-        if speed == 0:
-            self.uptech.CDS_SetSpeed(1, 0)
+        self.uptech.CDS_SetSpeed(1, left_speed)
+
+        if right_speed == 0:
             self.uptech.CDS_SetSpeed(2, 0)
 
-        elif abs(speed) == 300:
-            right_speed = int(speed * 1.207)
-            self.uptech.CDS_SetSpeed(1, speed)
+        elif abs(right_speed) == 300:
+            right_speed= int(right_speed * 1.207)
             self.uptech.CDS_SetSpeed(2, -right_speed)
 
-        elif abs(speed) == 400:
-            right_speed = int(speed * 1.15)
-            self.uptech.CDS_SetSpeed(1, speed)
+        elif abs(right_speed) == 400:
+            right_speed= int(right_speed * 1.15)
             self.uptech.CDS_SetSpeed(2, -right_speed)
-
-
-
-
+            
     def move_cmd_300(self, left_speed, right_speed):
         right_speed = int(right_speed * 1.207)
         self.uptech.CDS_SetSpeed(1, left_speed)
@@ -82,13 +78,13 @@ class MotionController:
 
     # 前上台动作
     def go_up_ahead_platform(self):
-        self.move_cmd(0)
+        self.move_cmd(0, 0)
         time.sleep(0.1)
         # 前后支撑爪抬起
         self.default_platform()
         time.sleep(0.4)
         #前进0.7s，这时前方已经顶住擂台边缘
-        self.move_cmd(400)
+        self.move_cmd(400, 400)
         time.sleep(1.2)
         # 支前爪,把前半身撑起来
         self.pack_up_ahead()
@@ -102,18 +98,18 @@ class MotionController:
         # 恢复成默认上台动作
         self.default_platform()
         time.sleep(1)
-        self.move_cmd(0)
+        self.move_cmd(0, 0)
         time.sleep(0.5)
 
     # 后上台动作
     def go_up_behind_platform(self):
-        self.move_cmd(0)
+        self.move_cmd(0, 0)
         time.sleep(0.1)
         # 前后支撑爪抬起
         self.default_platform()
         time.sleep(0.4)
         # 后退0.7s，这时后方已经顶住擂台边缘
-        self.move_cmd(-400)
+        self.move_cmd(-400, -400)
         time.sleep(1.2)
         # 支后爪，把后半身撑起来
         self.pack_up_behind()
@@ -127,7 +123,7 @@ class MotionController:
         # 默认上台
         self.default_platform()
         time.sleep(1)
-        self.move_cmd(0)
+        self.move_cmd(0, 0)
         time.sleep(0.5)
 
     # 我跳舞
