@@ -154,11 +154,11 @@ class Match_demo:
         ad_4 = self.uptech.ADC_Get_Channel(4)
         #后方灰度
         ad_5 = self.uptech.ADC_Get_Channel(5)
-        if ad_4 + ad_5 < 3000 :
-            # 灰度值较小在台下
+        if ad_4 + ad_5 > 7000 :
+            # 灰度值较大在台下
             return 0
         else:
-            # 灰度值较大在台上
+            # 灰度值较小在台上
             return 1
       
     # 台下的位置检测判定，底部红外光电可以检测擂台和围栏，上方红外测距可以检测围栏
