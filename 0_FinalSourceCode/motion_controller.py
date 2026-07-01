@@ -54,31 +54,31 @@ class MotionController:
 
     # 默认为前后爪都收起的状态
     def default_platform(self):
-        self.uptech.CDS_SetAngle(5, 424, self.servo_speed)
-        self.uptech.CDS_SetAngle(6, 600, self.servo_speed)
-        self.uptech.CDS_SetAngle(7, 600, self.servo_speed)
-        self.uptech.CDS_SetAngle(8, 424, self.servo_speed)
+        self.uptech.CDS_SetAngle(5, 224, self.servo_speed)
+        self.uptech.CDS_SetAngle(6, 800, self.servo_speed)
+        self.uptech.CDS_SetAngle(7, 800, self.servo_speed)
+        self.uptech.CDS_SetAngle(8, 224, self.servo_speed)
         time.sleep(0.01)
-        self.uptech.CDS_SetAngle(5, 424, self.servo_speed)
-        self.uptech.CDS_SetAngle(6, 600, self.servo_speed)
-        self.uptech.CDS_SetAngle(7, 600, self.servo_speed)
-        self.uptech.CDS_SetAngle(8, 424, self.servo_speed)
+        self.uptech.CDS_SetAngle(5, 224, self.servo_speed)
+        self.uptech.CDS_SetAngle(6, 800, self.servo_speed)
+        self.uptech.CDS_SetAngle(7, 800, self.servo_speed)
+        self.uptech.CDS_SetAngle(8, 224, self.servo_speed)
 
     # 支撑前爪,发两遍确认发送成功
     def pack_up_ahead(self):
-        self.uptech.CDS_SetAngle(5, 780, self.servo_speed)
-        self.uptech.CDS_SetAngle(6, 244, self.servo_speed)
+        self.uptech.CDS_SetAngle(5, 750, self.servo_speed)
+        self.uptech.CDS_SetAngle(6, 274, self.servo_speed)
         time.sleep(0.01)
-        self.uptech.CDS_SetAngle(5, 780, self.servo_speed)
-        self.uptech.CDS_SetAngle(6, 244, self.servo_speed)
+        self.uptech.CDS_SetAngle(5, 750, self.servo_speed)
+        self.uptech.CDS_SetAngle(6, 274, self.servo_speed)
 
     # 支撑后爪，发两遍确认发送成功
     def pack_up_behind(self):
-        self.uptech.CDS_SetAngle(7, 244, self.servo_speed)
-        self.uptech.CDS_SetAngle(8, 780, self.servo_speed)
+        self.uptech.CDS_SetAngle(7, 274, self.servo_speed)
+        self.uptech.CDS_SetAngle(8, 750, self.servo_speed)
         time.sleep(0.01)
-        self.uptech.CDS_SetAngle(7, 244, self.servo_speed)
-        self.uptech.CDS_SetAngle(8, 780, self.servo_speed)
+        self.uptech.CDS_SetAngle(7, 274, self.servo_speed)
+        self.uptech.CDS_SetAngle(8, 750, self.servo_speed)
 
     # 前上台动作
     def go_up_ahead_platform(self):
@@ -92,16 +92,16 @@ class MotionController:
         time.sleep(1)
         # 支前爪,把前半身撑起来
         self.pack_up_ahead()
-        time.sleep(0.5)
+        time.sleep(0.7)
         # 收起前爪
         self.default_platform()
-        time.sleep(0.3)
+        time.sleep(0.2)
         # 支后爪，把后半身撑起来
         self.pack_up_behind()
-        time.sleep(0.6)
+        time.sleep(0.7)
         # 恢复成默认上台动作
         self.default_platform()
-        time.sleep(0.1)
+        time.sleep(0.2)
         self.move_cmd(0, 0)
         time.sleep(0.5)
 
@@ -117,16 +117,16 @@ class MotionController:
         time.sleep(1)
         # 支后爪，把后半身撑起来
         self.pack_up_behind()
-        time.sleep(0.5)
+        time.sleep(0.7)
         # 收起前爪
         self.default_platform()
         # 支前爪，把前半身撑起来
-        time.sleep(0.3)
+        time.sleep(0.2)
         self.pack_up_ahead()
-        time.sleep(0.6)
+        time.sleep(0.7)
         # 默认上台
         self.default_platform()
-        time.sleep(0.1)
+        time.sleep(0.2)
         self.move_cmd(0, 0)
         time.sleep(0.5)
 
