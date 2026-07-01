@@ -45,6 +45,11 @@ HTML_PAGE = """<!DOCTYPE html>
       <button onclick="enterPlatform('behind')">后上台</button>
     </div>
     <div class="panel">
+      <div>
+        <label for="speed_input">速度参数:</label>
+        <input id="speed_input" type="number" min="0" value="400" style="width:100px; padding:6px; font-size:14px;" />
+        <span style="color:#666;">仅使用正速度</span>
+      </div>
       <div class="status">Fence code: <span id="fence">--</span></div>
       <div class="status">Edge code: <span id="edge">--</span></div>
       <div class="status">Enemy code: <span id="enemy">--</span></div>
@@ -55,8 +60,13 @@ HTML_PAGE = """<!DOCTYPE html>
     </div>
   </div>
   <script>
+    function getSpeed() {
+      const value = parseInt(document.getElementById('speed_input').value, 10);
+      return Number.isFinite(value) && value > 0 ? value : 400;
+    }
     function send(cmd) {
-      fetch(`/command?cmd=${cmd}`)
+      const speed = getSpeed();
+      fetch(`/command?cmd=${cmd}&speed=${speed}`)
         .then(r => r.text())
         .then(t => {
           console.log(t);
@@ -105,7 +115,8 @@ class RemoteHandler(BaseHTTPRequestHandler):
 
         if path == "/command":
             cmd = params.get("cmd", [""])[0]
-            result = self.server.controller.handle_command(cmd)
+            speed = params.get("speed", [""])[0]
+            result = self.server.controller.handle_command(cmd, speed)
             self._respond_text(result)
             return
 
@@ -166,29 +177,36 @@ class RemoteServer:
         self._update_thread = threading.Thread(target=self._poll_status, daemon=True)
         self._update_thread.start()
 
-    def handle_command(self, cmd):
+    def handle_command(self, cmd, speed_value):
+        try:
+            speed = abs(int(speed_value))
+        except (TypeError, ValueError):
+            speed = 400
+        if speed == 0:
+            speed = 400
+
         action = cmd.lower()
-        print(f"收到远程命令: {action}")
+        print(f"收到远程命令: {action} speed={speed}")
         if action == "forward":
-            self.controller.move_cmd(400, 400)
-            self.current_command = "前进"
-            return "前进"
+            self.controller.move_cmd(speed, speed)
+            self.current_command = f"前进({speed})"
+            return self.current_command
         if action == "backward":
-            self.controller.move_cmd(-400, -400)
-            self.current_command = "后退"
-            return "后退"
+            self.controller.move_cmd(-speed, -speed)
+            self.current_command = f"后退({speed})"
+            return self.current_command
         if action == "left":
-            self.controller.move_cmd(-400, 400)
-            self.current_command = "左转"
-            return "左转"
+            self.controller.move_cmd(-speed, speed)
+            self.current_command = f"左转({speed})"
+            return self.current_command
         if action == "right":
-            self.controller.move_cmd(400, -400)
-            self.current_command = "右转"
-            return "右转"
+            self.controller.move_cmd(speed, -speed)
+            self.current_command = f"右转({speed})"
+            return self.current_command
         if action == "stop":
             self.controller.move_cmd(0, 0)
             self.current_command = "停止"
-            return "停止"
+            return self.current_command
         self.current_command = "未知指令"
         return "unknown command"
 
