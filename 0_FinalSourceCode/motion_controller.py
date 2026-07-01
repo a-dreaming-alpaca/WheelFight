@@ -34,18 +34,23 @@ class MotionController:
             800: 0.988
         }
         A, B, C, D = 1.037, -1.9325, 1.9772, -0.0848
-
+        sign = 0
+        if right_speed < 0:
+            sign = -1
+        else:
+            sign = 1
         if right_speed == 0:
             pass
         elif abs(right_speed) in CALIB_MAP:
             cal = CALIB_MAP[abs(right_speed)]
             right_speed = int(right_speed * cal)
+            right_speed = abs(right_speed)
         else:
-            s = right_speed / 1000
+            s = abs(right_speed / 1000)
             right_speed = int(1000 * (A * s ** 3 + B * s ** 2 + C * s + D))
-
+            
         self.uptech.CDS_SetSpeed(1, left_speed)
-        self.uptech.CDS_SetSpeed(2, -right_speed)
+        self.uptech.CDS_SetSpeed(2, - sign * right_speed)
 
     # 默认为前后爪都收起的状态
     def default_platform(self):
