@@ -46,6 +46,8 @@ HTML_PAGE = """<!DOCTYPE html>
     </div>
     <div class="panel">
       <div class="status">Fence code: <span id="fence">--</span></div>
+      <div class="status">Edge code: <span id="edge">--</span></div>
+      <div class="status">Enemy code: <span id="enemy">--</span></div>
       <div class="status">当前指令: <span id="current_cmd">--</span></div>
       <div>Sensor raw:</div>
       <div id="sensors">--</div>
@@ -76,6 +78,8 @@ HTML_PAGE = """<!DOCTYPE html>
         .then(r => r.json())
         .then(data => {
           document.getElementById('fence').innerText = data.fence_code;
+          document.getElementById('edge').innerText = data.edge_code;
+          document.getElementById('enemy').innerText = data.enemy_code;
           document.getElementById('sensors').innerText = data.raw_text;
           document.getElementById('current_cmd').innerText = data.current_command || '--';
         })
@@ -148,8 +152,17 @@ class RemoteServer:
             print("Warning: ADC_IO_Open failed:", exc)
 
         self.last_fence_code = None
+        self.last_edge_code = None
+        self.last_enemy_code = None
         self.current_command = "--"
-        self.fence_status = {"fence_code": -1, "raw_text": "--", "current_command": self.current_command}
+        self.controller.uptech.ADC_IO_SetAllIOMode(0)
+        self.fence_status = {
+            "fence_code": -1,
+            "edge_code": -1,
+            "enemy_code": -1,
+            "raw_text": "--",
+            "current_command": self.current_command,
+        }
         self._update_thread = threading.Thread(target=self._poll_status, daemon=True)
         self._update_thread.start()
 
@@ -209,10 +222,10 @@ class RemoteServer:
             return -1, "sensor read failed"
 
         raw_text = f"IO[0-3]={io_0},{io_1},{io_2},{io_3} AD[0-3]={ad_0},{ad_1},{ad_2},{ad_3}"
-        FD = 260
-        RD = 350
-        BD = 450
-        LD = 350
+        FD = 150
+        RD = 150
+        BD = 150
+        LD = 150
 
         if io_2 == 0 and io_1 == 1 and io_3 == 1 and ad_0 > FD and ad_1 < RD and ad_2 < BD and ad_3 < LD:
             return 1, raw_text
@@ -252,13 +265,89 @@ class RemoteServer:
             return 18, raw_text
         return 101, raw_text
 
+    def edge_detect(self):
+        try:
+            io_4 = self.controller.uptech.ADC_IO_GetInputLevel(4)
+            io_5 = self.controller.uptech.ADC_IO_GetInputLevel(5)
+            io_6 = self.controller.uptech.ADC_IO_GetInputLevel(6)
+            io_7 = self.controller.uptech.ADC_IO_GetInputLevel(7)
+            ad_0 = self.controller.uptech.ADC_Get_Channel(0)
+        except Exception as exc:
+            print("Edge detect read failed:", exc)
+            return -1
+
+        if io_4 == 0 and io_5 == 0 and io_6 == 0 and io_7 == 0:
+            return 0
+        if io_4 == 1 and io_5 == 0 and io_6 == 0 and io_7 == 0:
+            return 1
+        if io_4 == 0 and io_5 == 1 and io_6 == 0 and io_7 == 0:
+            return 2
+        if io_4 == 0 and io_5 == 0 and io_6 == 1 and io_7 == 0:
+            return 3
+        if io_4 == 0 and io_5 == 0 and io_6 == 0 and io_7 == 1:
+            return 4
+        if io_4 == 1 and io_5 == 1 and io_6 == 0 and io_7 == 0:
+            return 5
+        if io_4 == 0 and io_5 == 0 and io_6 == 1 and io_7 == 1:
+            return 6
+        if io_4 == 1 and io_5 == 0 and io_6 == 0 and io_7 == 1:
+            return 7
+        if io_4 == 0 and io_5 == 1 and io_6 == 1 and io_7 == 0:
+            return 8
+        if io_4 == 1 and io_5 == 1 and io_6 == 1 and io_7 == 1 and ad_0 > 1000:
+            return 9
+        if io_4 == 1 and io_5 == 1 and io_6 == 1 and io_7 == 1 and ad_0 <= 1000:
+            return 10
+        return 102
+
+    def enemy_detect(self):
+        try:
+            io_0 = self.controller.uptech.ADC_IO_GetInputLevel(0)
+            io_1 = self.controller.uptech.ADC_IO_GetInputLevel(1)
+            io_2 = self.controller.uptech.ADC_IO_GetInputLevel(2)
+            io_3 = self.controller.uptech.ADC_IO_GetInputLevel(3)
+            ad_0 = self.controller.uptech.ADC_Get_Channel(0)
+        except Exception as exc:
+            print("Enemy detect read failed:", exc)
+            return -1
+
+        if io_0 == 1 and io_1 == 1 and io_2 == 1 and io_3 == 1:
+            return 0
+        if io_0 == 0:
+            if ad_0 < 1000:
+                return 1
+            return 11
+        if io_1 == 0:
+            return 2
+        if io_2 == 0:
+            return 3
+        if io_3 == 0:
+            return 4
+        return 103
+
     def _poll_status(self):
         while True:
             fence_code, raw_text = self.fence_detect()
+            edge_code = self.edge_detect()
+            enemy_code = self.enemy_detect()
+
             if fence_code != self.last_fence_code:
                 self.last_fence_code = fence_code
                 print(f"Fence state changed: {fence_code} | {raw_text}")
-            self.fence_status = {"fence_code": fence_code, "raw_text": raw_text}
+            if edge_code != self.last_edge_code:
+                self.last_edge_code = edge_code
+                print(f"Edge state changed: {edge_code}")
+            if enemy_code != self.last_enemy_code:
+                self.last_enemy_code = enemy_code
+                print(f"Enemy state changed: {enemy_code}")
+
+            self.fence_status = {
+                "fence_code": fence_code,
+                "edge_code": edge_code,
+                "enemy_code": enemy_code,
+                "raw_text": raw_text,
+                "current_command": self.current_command,
+            }
             time.sleep(0.5)
 
     def current_status(self):
