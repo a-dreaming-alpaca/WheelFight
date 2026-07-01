@@ -254,8 +254,9 @@ class Match_demo:
         io_4 =self.uptech.ADC_IO_GetInputLevel(4) #左前
         io_5 =self.uptech.ADC_IO_GetInputLevel(5) #右前
         io_6 =self.uptech.ADC_IO_GetInputLevel(6) #右后
-        io_7 =self.uptech.ADC_IO_GetInputLevel(7) #左后
-        
+        # io_7 =self.uptech.ADC_IO_GetInputLevel(7) #左后
+        io_7 = 0
+
         ad_0 = self.uptech.ADC_Get_Channel(0) #前方测距值
         ad_2 = self.uptech.ADC_Get_Channel(2) #后方测距值
         

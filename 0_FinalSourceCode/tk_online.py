@@ -246,7 +246,7 @@ class RemoteServer:
             print("Fence detect read failed:", exc)
             return -1, "sensor read failed"
 
-        raw_text = f"IO[0-7]={io_0},{io_1},{io_2},{io_3},{io_4},{io_5},{io_6},{io_7} AD[0-5]={ad_0},{ad_1},{ad_2},{ad_3},{ad_4},{ad_5}"
+        raw_text = f"红外IO[0-7]=前：{io_0},右：{io_1},后：{io_2},左：{io_3},\n 左前：{io_4},右前：{io_5},右后：{io_6},左后：{io_7} \n 红外AD[0-3]=前：{ad_0},右：{ad_1},后：{ad_2},左：{ad_3}, \n 灰度前：{ad_4},灰度后：{ad_5}"
         FD = 260
         RD = 350
         BD = 450
