@@ -231,19 +231,26 @@ class RemoteServer:
             io_1 = self.controller.uptech.ADC_IO_GetInputLevel(1)
             io_2 = self.controller.uptech.ADC_IO_GetInputLevel(2)
             io_3 = self.controller.uptech.ADC_IO_GetInputLevel(3)
+            io_4 = self.controller.uptech.ADC_IO_GetInputLevel(4)
+            io_5 = self.controller.uptech.ADC_IO_GetInputLevel(5)
+            io_6 = self.controller.uptech.ADC_IO_GetInputLevel(6)
+            io_7 = self.controller.uptech.ADC_IO_GetInputLevel(7)
             ad_0 = self.controller.uptech.ADC_Get_Channel(0)
             ad_1 = self.controller.uptech.ADC_Get_Channel(1)
             ad_2 = self.controller.uptech.ADC_Get_Channel(2)
             ad_3 = self.controller.uptech.ADC_Get_Channel(3)
+            ad_4 = self.controller.uptech.ADC_Get_Channel(4)
+            ad_5 = self.controller.uptech.ADC_Get_Channel(5)
+
         except Exception as exc:
             print("Fence detect read failed:", exc)
             return -1, "sensor read failed"
 
-        raw_text = f"IO[0-3]={io_0},{io_1},{io_2},{io_3} AD[0-3]={ad_0},{ad_1},{ad_2},{ad_3}"
-        FD = 150
-        RD = 150
-        BD = 150
-        LD = 150
+        raw_text = f"IO[0-7]={io_0},{io_1},{io_2},{io_3},{io_4},{io_5},{io_6},{io_7} AD[0-5]={ad_0},{ad_1},{ad_2},{ad_3},{ad_4},{ad_5}"
+        FD = 260
+        RD = 350
+        BD = 450
+        LD = 350
 
         if io_2 == 0 and io_1 == 1 and io_3 == 1 and ad_0 > FD and ad_1 < RD and ad_2 < BD and ad_3 < LD:
             return 1, raw_text
@@ -290,6 +297,7 @@ class RemoteServer:
             io_6 = self.controller.uptech.ADC_IO_GetInputLevel(6)
             io_7 = self.controller.uptech.ADC_IO_GetInputLevel(7)
             ad_0 = self.controller.uptech.ADC_Get_Channel(0)
+            ad_2 = self.controller.uptech.ADC_Get_Channel(2)
         except Exception as exc:
             print("Edge detect read failed:", exc)
             return -1
@@ -314,9 +322,10 @@ class RemoteServer:
             return 8
         if io_4 == 1 and io_5 == 1 and io_6 == 1 and io_7 == 1 and ad_0 > 1000:
             return 9
-        if io_4 == 1 and io_5 == 1 and io_6 == 1 and io_7 == 1 and ad_0 <= 1000:
+        if io_4 == 1 and io_5 == 1 and io_6 == 1 and io_7 == 1 and ad_2 > 1000:
             return 10
-        return 102
+        else:
+            return 102
 
     def enemy_detect(self):
         try:
@@ -341,7 +350,8 @@ class RemoteServer:
             return 3
         if io_3 == 0:
             return 4
-        return 103
+        else: 
+            return 103
 
     def _poll_status(self):
         while True:
