@@ -286,10 +286,10 @@ class Match_demo:
         elif io_4 == 0 and io_5 == 1 and io_6 == 1 and io_7 == 0:
             # 右侧两个检测到边缘
             return 8  
-        elif io_4 == 1 and io_5 == 1 and io_6 == 1 and io_7 == 1 and ad_0 > 1000:
+        elif io_4 == 1 and io_5 == 1 and io_6 == 1 and io_7 == 1 and ad_0 > 700:
             # 卡台搁浅在擂台边缘，其中前方在擂台下，后方在擂台上
             return 9
-        elif io_4 == 1 and io_5 == 1 and io_6 == 1 and io_7 == 1 and ad_2 > 1000:
+        elif io_4 == 1 and io_5 == 1 and io_6 == 1 and io_7 == 1 and ad_2 > 700:
             # 卡台搁浅在擂台边缘，其中前方在擂台上，后方在擂台下
             return 10
         else:
@@ -364,6 +364,7 @@ class Match_demo:
         while True:
             #print("start game")
             stage = self.paltform_detect()
+            print(f"Stage:{stage}")
             #在台下
             if stage == 0: 
                 print("在台下")
@@ -383,7 +384,7 @@ class Match_demo:
                         # 中间右侧红外测距
                         ad_1 = self.uptech.ADC_Get_Channel(1)
                         # 前方触发，左侧没触发，右侧离得足够远,说明转过来了，前进
-                        if io_0 ==0 and ad_1 < self.RD and i0_3 ==1:
+                        if io_0 ==0 and ad_1 < self.RD and i0_3 == 1:
                             time.sleep(0.2)
                             self.motion_controller.move_cmd(freeSpeed, freeSpeed)
                             time.sleep(0.3)
@@ -403,11 +404,11 @@ class Match_demo:
                         # 底部前方红外光电
                         io_0 = self.uptech.ADC_IO_GetInputLevel(0)
                         # 底部左侧红外光电
-                        i0_3 = self.uptech.ADC_IO_GetInputLevel(3)
+                        i0_1 = self.uptech.ADC_IO_GetInputLevel(1)
                         # 中间右侧红外测距
-                        ad_1 = self.uptech.ADC_Get_Channel(1)
+                        ad_3 = self.uptech.ADC_Get_Channel(3)
                         # 前方触发，右侧没触发，左侧离得足够远,说明转过来了，前进
-                        if io_0 ==0 and ad_1 < self.RD and i0_3 ==1:
+                        if io_0 == 0 and ad_3 < self.LD and i0_1 == 1:
                             time.sleep(0.2)
                             self.motion_controller.move_cmd(freeSpeed, freeSpeed)
                             time.sleep(0.3)
@@ -470,11 +471,11 @@ class Match_demo:
                         # 底部前方红外光电
                         io_0 = self.uptech.ADC_IO_GetInputLevel(0)
                         # 底部左侧红外光电
-                        i0_3 = self.uptech.ADC_IO_GetInputLevel(3)
+                        i0_1 = self.uptech.ADC_IO_GetInputLevel(1)
                         # 中间右侧红外测距
-                        ad_1 = self.uptech.ADC_Get_Channel(1)
+                        ad_3 = self.uptech.ADC_Get_Channel(3)
                          # 前方触发，右侧没触发，左侧离得足够远,说明转过来了，前进
-                        if io_0 ==0 and ad_1 < self.RD and i0_3 ==1:
+                        if io_0 == 0 and ad_3 < self.LD and i0_1 == 1:
                             time.sleep(0.2)
                             self.motion_controller.move_cmd(freeSpeed, freeSpeed)
                             time.sleep(0.3)
@@ -495,7 +496,7 @@ class Match_demo:
                         # 中间右侧红外测距
                         ad_1 = self.uptech.ADC_Get_Channel(1)
                         # 前方触发，左侧没触发，右侧离得足够远,说明转过来了，前进
-                        if io_0 ==0 and ad_1 < self.RD and i0_3 ==1:
+                        if io_0 == 0 and ad_1 < self.RD and i0_3 == 1:
                             time.sleep(0.2)
                             self.motion_controller.move_cmd(freeSpeed, freeSpeed)
                             time.sleep(0.3)
@@ -512,11 +513,11 @@ class Match_demo:
                         # 底部前方红外光电
                         io_0 = self.uptech.ADC_IO_GetInputLevel(0)
                         # 底部左侧红外光电
-                        i0_3 = self.uptech.ADC_IO_GetInputLevel(3)
+                        i0_1 = self.uptech.ADC_IO_GetInputLevel(1)
                         # 中间右侧红外测距
-                        ad_1 = self.uptech.ADC_Get_Channel(1)
+                        ad_3 = self.uptech.ADC_Get_Channel(3)
                          # 前方触发，右侧没触发，左侧离得足够远,说明转过来了，前进
-                        if io_0 ==0 and ad_1 < self.RD and i0_3 ==1:
+                        if io_0 == 0 and ad_3 < self.LD and i0_1 == 1:
                             time.sleep(0.2)
                             self.motion_controller.move_cmd(freeSpeed, freeSpeed)
                             time.sleep(0.3)
@@ -546,6 +547,11 @@ class Match_demo:
                         else:
                             self.motion_controller.move_cmd(-freeSpeed, freeSpeed)
                             time.sleep(0.01)
+                if fence == 101:
+                    self.motion_controller.move_cmd(freeSpeed, -freeSpeed)
+                    time.sleep(3.3)
+                    self.motion_controller.move_cmd(freeSpeed, freeSpeed)
+
             if stage == 1 :
                 print("在台上")
                     # 检测边缘
@@ -703,6 +709,9 @@ class Match_demo:
 if __name__ == '__main__':
 
     match_demo = Match_demo() 
+    match_demo.start_match()
+
+"""
     while True:
         # 底部右侧红外光电
         io_1 = match_demo.uptech.ADC_IO_GetInputLevel(1)
@@ -716,3 +725,4 @@ if __name__ == '__main__':
             time.sleep(0.1)
         # match_demo.stop()
     match_demo.start_match()
+"""

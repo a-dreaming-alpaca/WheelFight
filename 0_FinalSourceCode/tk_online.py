@@ -47,12 +47,13 @@ HTML_PAGE = """<!DOCTYPE html>
     <div class="panel">
       <div>
         <label for="speed_input">速度参数:</label>
-        <input id="speed_input" type="number" min="0" value="400" style="width:100px; padding:6px; font-size:14px;" />
+        <input id="speed_input" type="number" min="0" value="550" style="width:100px; padding:6px; font-size:14px;" />
         <span style="color:#666;">仅使用正速度</span>
       </div>
       <div class="status">Fence code: <span id="fence">--</span></div>
       <div class="status">Edge code: <span id="edge">--</span></div>
       <div class="status">Enemy code: <span id="enemy">--</span></div>
+      <div class="status">Stage code: <span id="stage">--</span></div>
       <div class="status">当前指令: <span id="current_cmd">--</span></div>
       <div>Sensor raw:</div>
       <div id="sensors">--</div>
@@ -62,7 +63,7 @@ HTML_PAGE = """<!DOCTYPE html>
   <script>
     function getSpeed() {
       const value = parseInt(document.getElementById('speed_input').value, 10);
-      return Number.isFinite(value) && value > 0 ? value : 400;
+      return Number.isFinite(value) && value > 0 ? value : 550;
     }
     function send(cmd) {
       const speed = getSpeed();
@@ -90,6 +91,7 @@ HTML_PAGE = """<!DOCTYPE html>
           document.getElementById('fence').innerText = data.fence_code;
           document.getElementById('edge').innerText = data.edge_code;
           document.getElementById('enemy').innerText = data.enemy_code;
+          document.getElementById('stage').innerText = data.stage_code;
           document.getElementById('sensors').innerText = data.raw_text;
           document.getElementById('current_cmd').innerText = data.current_command || '--';
         })
@@ -166,12 +168,14 @@ class RemoteServer:
         self.last_fence_code = None
         self.last_edge_code = None
         self.last_enemy_code = None
+        self.last_stage_code = None
         self.current_command = "--"
         self.controller.uptech.ADC_IO_SetAllIOMode(0)
         self.fence_status = {
             "fence_code": -1,
             "edge_code": -1,
             "enemy_code": -1,
+            "stage_coee": -1,
             "raw_text": "--",
             "current_command": self.current_command,
         }
@@ -182,9 +186,9 @@ class RemoteServer:
         try:
             speed = abs(int(speed_value))
         except (TypeError, ValueError):
-            speed = 400
+            speed = 550
         if speed == 0:
-            speed = 400
+            speed = 550
 
         action = cmd.lower()
         print(f"收到远程命令: {action} speed={speed}")
@@ -251,37 +255,12 @@ class RemoteServer:
         
         return self.match.fence_detect(), raw_text
 
-    def edge_detect(self):
-        try:
-            io_4 = self.controller.uptech.ADC_IO_GetInputLevel(4)
-            io_5 = self.controller.uptech.ADC_IO_GetInputLevel(5)
-            io_6 = self.controller.uptech.ADC_IO_GetInputLevel(6)
-            io_7 = self.controller.uptech.ADC_IO_GetInputLevel(7)
-            ad_0 = self.controller.uptech.ADC_Get_Channel(0)
-            ad_2 = self.controller.uptech.ADC_Get_Channel(2)
-        except Exception as exc:
-            print("Edge detect read failed:", exc)
-            return -1
-        return self.match.edge_detect()
-
-    def enemy_detect(self):
-        try:
-            io_0 = self.controller.uptech.ADC_IO_GetInputLevel(0)
-            io_1 = self.controller.uptech.ADC_IO_GetInputLevel(1)
-            io_2 = self.controller.uptech.ADC_IO_GetInputLevel(2)
-            io_3 = self.controller.uptech.ADC_IO_GetInputLevel(3)
-            ad_0 = self.controller.uptech.ADC_Get_Channel(0)
-        except Exception as exc:
-            print("Enemy detect read failed:", exc)
-            return -1
-        return self.match.enemy_detect()
-
     def _poll_status(self):
         while True:
             fence_code, raw_text = self.fence_detect()
-            edge_code = self.edge_detect()
-            enemy_code = self.enemy_detect()
-
+            edge_code = self.match.edge_detect()
+            enemy_code = self.match.enemy_detect()
+            stage_code = self.match.paltform_detect()
             if fence_code != self.last_fence_code:
                 self.last_fence_code = fence_code
                 print(f"Fence state changed: {fence_code} | {raw_text}")
@@ -291,11 +270,14 @@ class RemoteServer:
             if enemy_code != self.last_enemy_code:
                 self.last_enemy_code = enemy_code
                 print(f"Enemy state changed: {enemy_code}")
+            if stage_code != self.last_edge_code:
+                self.last_stage_code = stage_code
 
             self.fence_status = {
                 "fence_code": fence_code,
                 "edge_code": edge_code,
                 "enemy_code": enemy_code,
+                "stage_code": stage_code,
                 "raw_text": raw_text,
                 "current_command": self.current_command,
             }
