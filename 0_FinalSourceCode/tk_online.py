@@ -9,7 +9,7 @@ from urllib.parse import urlparse, parse_qs
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from motion_controller import MotionController
-
+from match_demo import Match_demo
 HOST = "0.0.0.0"
 PORT = 8000
 
@@ -157,6 +157,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
 class RemoteServer:
     def __init__(self):
         self.controller = MotionController()
+        self.match = Match_demo()
         try:
             self.controller.uptech.ADC_IO_Open()
         except Exception as exc:
@@ -247,48 +248,8 @@ class RemoteServer:
             return -1, "sensor read failed"
 
         raw_text = f"红外IO[0-7]=前：{io_0},右：{io_1},后：{io_2},左：{io_3},\n 左前：{io_4},右前：{io_5},右后：{io_6},左后：{io_7} \n 红外AD[0-3]=前：{ad_0},右：{ad_1},后：{ad_2},左：{ad_3}, \n 灰度前：{ad_4},灰度后：{ad_5}"
-        FD = 260
-        RD = 350
-        BD = 450
-        LD = 350
-
-        if io_2 == 0 and io_1 == 1 and io_3 == 1 and ad_0 > FD and ad_1 < RD and ad_2 < BD and ad_3 < LD:
-            return 1, raw_text
-        if io_3 == 0 and io_0 == 1 and io_2 == 1 and ad_0 < FD and ad_1 > RD and ad_2 < BD and ad_3 < LD:
-            return 2, raw_text
-        if io_0 == 0 and io_1 == 1 and io_3 == 1 and ad_0 < FD and ad_1 < RD and ad_2 > BD and ad_3 < LD:
-            return 3, raw_text
-        if io_1 == 0 and io_0 == 1 and io_2 == 1 and ad_0 < FD and ad_1 < RD and ad_2 < BD and ad_3 > LD:
-            return 4, raw_text
-        if io_1 == 1 and io_2 == 1 and ad_0 > FD and ad_1 < RD and ad_2 < BD and ad_3 > LD:
-            return 5, raw_text
-        if io_2 == 1 and io_3 == 1 and ad_0 > FD and ad_1 > RD and ad_2 < BD and ad_3 < LD:
-            return 6, raw_text
-        if io_0 == 1 and io_3 == 1 and ad_0 < FD and ad_1 > RD and ad_2 > BD and ad_3 < LD:
-            return 7, raw_text
-        if io_0 == 1 and io_1 == 1 and ad_0 < FD and ad_1 < RD and ad_2 > BD and ad_3 > LD:
-            return 8, raw_text
-        if ad_0 > FD and ad_1 < RD and ad_2 > BD and ad_3 < LD:
-            return 9, raw_text
-        if ad_0 < FD and ad_1 > RD and ad_2 < BD and ad_3 > LD:
-            return 10, raw_text
-        if ad_0 > FD and ad_1 > RD and ad_2 < BD and ad_3 > LD:
-            return 11, raw_text
-        if ad_0 > FD and ad_1 > RD and ad_2 > BD and ad_3 < LD:
-            return 12, raw_text
-        if ad_0 > FD and ad_1 < RD and ad_2 > BD and ad_3 > LD:
-            return 13, raw_text
-        if ad_0 < FD and ad_1 > RD and ad_2 > BD and ad_3 > LD:
-            return 14, raw_text
-        if io_0 == 0 and io_1 == 0 and ad_0 < FD and ad_1 < RD:
-            return 15, raw_text
-        if io_0 == 0 and io_3 == 0 and ad_0 < FD and ad_3 < LD:
-            return 16, raw_text
-        if io_1 == 0 and io_2 == 0 and ad_1 < RD and ad_2 < BD:
-            return 17, raw_text
-        if io_2 == 0 and io_3 == 0 and ad_2 < BD and ad_3 < LD:
-            return 18, raw_text
-        return 101, raw_text
+        
+        return self.match.fence_detect(), raw_text
 
     def edge_detect(self):
         try:
@@ -301,31 +262,7 @@ class RemoteServer:
         except Exception as exc:
             print("Edge detect read failed:", exc)
             return -1
-
-        if io_4 == 0 and io_5 == 0 and io_6 == 0 and io_7 == 0:
-            return 0
-        if io_4 == 1 and io_5 == 0 and io_6 == 0 and io_7 == 0:
-            return 1
-        if io_4 == 0 and io_5 == 1 and io_6 == 0 and io_7 == 0:
-            return 2
-        if io_4 == 0 and io_5 == 0 and io_6 == 1 and io_7 == 0:
-            return 3
-        if io_4 == 0 and io_5 == 0 and io_6 == 0 and io_7 == 1:
-            return 4
-        if io_4 == 1 and io_5 == 1 and io_6 == 0 and io_7 == 0:
-            return 5
-        if io_4 == 0 and io_5 == 0 and io_6 == 1 and io_7 == 1:
-            return 6
-        if io_4 == 1 and io_5 == 0 and io_6 == 0 and io_7 == 1:
-            return 7
-        if io_4 == 0 and io_5 == 1 and io_6 == 1 and io_7 == 0:
-            return 8
-        if io_4 == 1 and io_5 == 1 and io_6 == 1 and io_7 == 1 and ad_0 > 1000:
-            return 9
-        if io_4 == 1 and io_5 == 1 and io_6 == 1 and io_7 == 1 and ad_2 > 1000:
-            return 10
-        else:
-            return 102
+        return self.match.edge_detect()
 
     def enemy_detect(self):
         try:
@@ -337,21 +274,7 @@ class RemoteServer:
         except Exception as exc:
             print("Enemy detect read failed:", exc)
             return -1
-
-        if io_0 == 1 and io_1 == 1 and io_2 == 1 and io_3 == 1:
-            return 0
-        if io_0 == 0:
-            if ad_0 < 1000:
-                return 1
-            return 11
-        if io_1 == 0:
-            return 2
-        if io_2 == 0:
-            return 3
-        if io_3 == 0:
-            return 4
-        else: 
-            return 103
+        return self.match.enemy_detect()
 
     def _poll_status(self):
         while True:

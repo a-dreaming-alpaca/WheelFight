@@ -52,10 +52,10 @@ import cv2
 class Match_demo:
 
 
-    FD = 260 #前方测距检测围栏临界值
-    RD = 350 #右方测距检测围栏临界值
-    BD = 450 #后方测距检测围栏临界值
-    LD = 350 #左方测距检测围栏临界值
+    FD = 350 #前方测距检测围栏临界值
+    RD = 250 #右方测距检测围栏临界值
+    BD = 280 #后方测距检测围栏临界值
+    LD = 200 #左方测距检测围栏临界值
     
     na = 0  # 倾斜计时
     nd = 0  # 前搁浅计时
@@ -91,7 +91,7 @@ class Match_demo:
                 print("cannot connect camera")
 
             while True:
-
+                
                 weight = 320
                 height = 240
                 # x坐标为40  
@@ -354,8 +354,8 @@ class Match_demo:
         '''
         freeSpeed = 550 #漫游擂台、旋转速度 
         enemySpeed = 800 #检测到敌人速度
-        turn = 0.6   #左右有物块/敌人旋转90度时间延迟为0.5s
-        turn_180 = 1.3 #后方有物块/敌人旋转180度时间延迟为1s
+        turn = 0.9   #左右有物块/敌人旋转90度时间延迟为0.5s
+        turn_180 = 1.8 #后方有物块/敌人旋转180度时间延迟为1s
 
 
         self.motion_controller.default_platform()
@@ -585,6 +585,7 @@ class Match_demo:
                         
                     # 自家物块，绕着走
                     if enemy == 5:
+                        print("开始绕")
                         self.motion_controller.move_cmd(-freeSpeed, -freeSpeed)
                         time.sleep(0.2)
                         self.motion_controller.move_cmd(-freeSpeed, freeSpeed)
@@ -639,14 +640,14 @@ class Match_demo:
                             
                 # 左侧两个检测到边缘，先右转再前进
                 if edge == 7:
-                    self.motion_controller.move_cmd(500, -freeSpeed)
+                    self.motion_controller.move_cmd(freeSpeed + 100, -freeSpeed)
                     time.sleep(0.5)
                     self.motion_controller.move_cmd(freeSpeed, freeSpeed)
                     time.sleep(0.3)
                             
                 # 右侧两个检测到边缘，先左转再前进
                 if edge == 8:
-                    self.motion_controller.move_cmd(-freeSpeed, 500)
+                    self.motion_controller.move_cmd(-freeSpeed, freeSpeed + 100)
                     time.sleep(0.5)
                     self.motion_controller.move_cmd(freeSpeed, freeSpeed)
                     time.sleep(0.3)
