@@ -92,6 +92,9 @@ class Match_demo:
         self._action_deadline = 0
         self._action_label = ""
         self._stun_time = 0
+        self._match_running = False
+        self._last_stage = None
+        self.camera_activate = False
         apriltag_detect = threading.Thread(target = self.apriltag_detect_thread)
         apriltag_detect.setDaemon(True)
         apriltag_detect.start()
@@ -112,7 +115,7 @@ class Match_demo:
             except RuntimeError as e:
                 print(f"cannot connect camera {VideoCaptureIndex}")
 
-            while True:
+            while self.camera_activate:
                 
                 weight = 320
                 height = 240
@@ -399,6 +402,7 @@ class Match_demo:
             return 105
 
     def _set_state(self, state, reason=""):
+        # 状态变化统一从这里打印，调试时可以直接观察状态跳转链路。
         if self.state != state:
             if reason:
                 print(f"State:{self.state}->{state} {reason}")
@@ -407,12 +411,14 @@ class Match_demo:
         self.state = state
 
     def _clear_action_sequence(self):
+        # 清掉尚未完成的分段动作，供高优先级事件抢占当前动作。
         self._action_sequence = []
         self._action_index = 0
         self._action_deadline = 0
         self._action_label = ""
 
     def _start_action_sequence(self, state, label, steps, reason=""):
+        # steps 中每一项为 (left_speed, right_speed, duration)，由主循环逐段执行。
         self._action_sequence = list(steps)
         self._action_index = 0
         self._action_deadline = 0
@@ -420,6 +426,7 @@ class Match_demo:
         self._set_state(state, reason)
 
     def _run_action_sequence(self):
+        # 每轮只执行当前小步，不阻塞主循环，方便边缘/正前目标随时抢占。
         if not self._action_sequence:
             return False
 
@@ -452,12 +459,14 @@ class Match_demo:
         return self._run_action_sequence()
 
     def _left_align_ready(self):
+        # 左侧对擂台时持续左转，直到前方传感器满足登台朝向。
         io_0 = self.uptech.ADC_IO_GetInputLevel(0)
         io_3 = self.uptech.ADC_IO_GetInputLevel(3)
         ad_1 = self.uptech.ADC_Get_Channel(1)
         return io_0 == 0 and ad_1 < self.RD and io_3 == 1
 
     def _right_align_ready(self):
+        # 右侧对擂台时持续右转，直到前方传感器满足登台朝向。
         io_0 = self.uptech.ADC_IO_GetInputLevel(0)
         io_1 = self.uptech.ADC_IO_GetInputLevel(1)
         ad_3 = self.uptech.ADC_Get_Channel(3)
@@ -492,6 +501,7 @@ class Match_demo:
             self.motion_controller.move_cmd(freeSpeed - 50, -freeSpeed + 50)
 
     def _handle_off_platform(self, freeSpeed, turn):
+        # 台下优先解决朝向和登台；可分段的调整动作通过 action_sequence 调度。
         fence = self.fence_detect()
         if fence != 101:
             self._stun_time = 0
@@ -593,6 +603,7 @@ class Match_demo:
             self.motion_controller.move_cmd(freeSpeed, -freeSpeed)
 
     def _edge_recover_steps(self, edge, freeSpeed, turn):
+        # 台上边缘恢复动作表，尽量保留原先实测速度与持续时间。
         edge_steps = {
             1: [(-freeSpeed, -freeSpeed, 0.8), (freeSpeed, -freeSpeed, turn)],
             2: [(-freeSpeed, -freeSpeed, 0.8), (-freeSpeed, freeSpeed, turn)],
@@ -607,6 +618,7 @@ class Match_demo:
         return edge_steps.get(edge)
 
     def _handle_edge_recover(self, edge, freeSpeed, turn):
+        # 边缘和搁浅恢复优先级高于攻击，避免机器人为了推目标跌落。
         self._stun_time = 0
         if edge == 9:
             self._run_blocking_recovery(
@@ -636,6 +648,7 @@ class Match_demo:
         )
 
     def _handle_on_platform(self, freeSpeed, enemySpeed, turn, turn_180):
+        # 台上优先级：防跌落 -> 正前方可推目标 -> 己方块避让 -> 转向/巡航。
         edge = self.edge_detect()
         if edge != 0:
             self._handle_edge_recover(edge, freeSpeed, turn)
@@ -694,6 +707,7 @@ class Match_demo:
             self.motion_controller.move_cmd(freeSpeed, freeSpeed)
 
     def _handle_slip(self, freeSpeed):
+        # 半边在台上/台下时仍调用原有搁浅动作，这些动作包含舵机时序。
         self._clear_action_sequence()
         slip = self.slip_detect()
         if slip == 0:
@@ -728,6 +742,21 @@ class Match_demo:
             self._set_state(self.STATE_SLIP_RECOVER, f"unknown slip {slip}")
             self.motion_controller.move_cmd(freeSpeed, freeSpeed)
 
+    def stop_match(self):
+        # Ctrl+C 或异常退出时统一停机，避免电机保持最后一次速度指令。
+        print("Stopping match controller...")
+        self._match_running = False
+        self.camera_activate = False
+        self._clear_action_sequence()
+        try:
+            self.motion_controller.move_cmd(0, 0)
+        except Exception as exc:
+            print(f"motor stop failed: {exc}")
+        try:
+            cv2.destroyAllWindows()
+        except Exception as exc:
+            print(f"opencv cleanup failed: {exc}")
+
     def start_match(self):
         '''
         State-machine match loop. Long motor-only maneuvers are broken into
@@ -738,26 +767,36 @@ class Match_demo:
         turn = 0.7
         turn_180 = 1.2
 
-        self.motion_controller.default_platform()
-        self._set_state(self.STATE_SEARCH, "match start")
-        time.sleep(1)
+        self._match_running = True
+        try:
+            self.motion_controller.default_platform()
+            self._set_state(self.STATE_SEARCH, "match start")
+            time.sleep(1)
 
-        while True:
-            stage = self.paltform_detect()
-            print(f"Stage:{stage}")
+            while self._match_running:
+                stage = self.paltform_detect()
+                print(f"Stage:{stage}")
+                if stage != self._last_stage:
+                    # 场地状态切换时丢弃旧动作，防止台下动作带到台上继续执行。
+                    self._clear_action_sequence()
+                    self._last_stage = stage
 
-            if stage == 0:
-                self._handle_off_platform(freeSpeed, turn)
-            elif stage == 1:
-                self._handle_on_platform(freeSpeed, enemySpeed, turn, turn_180)
-            elif stage == 2:
-                self._handle_slip(freeSpeed)
-            else:
-                self._clear_action_sequence()
-                self._set_state(self.STATE_SEARCH, f"unknown stage {stage}")
-                self.motion_controller.move_cmd(0, 0)
+                if stage == 0:
+                    self._handle_off_platform(freeSpeed, turn)
+                elif stage == 1:
+                    self._handle_on_platform(freeSpeed, enemySpeed, turn, turn_180)
+                elif stage == 2:
+                    self._handle_slip(freeSpeed)
+                else:
+                    self._clear_action_sequence()
+                    self._set_state(self.STATE_SEARCH, f"unknown stage {stage}")
+                    self.motion_controller.move_cmd(0, 0)
 
-            time.sleep(self.CONTROL_DT)
+                time.sleep(self.CONTROL_DT)
+        except KeyboardInterrupt:
+            print("KeyboardInterrupt received.")
+        finally:
+            self.stop_match()
 
 match_demo = Match_demo()
 
