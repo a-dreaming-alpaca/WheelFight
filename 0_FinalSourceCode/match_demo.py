@@ -61,6 +61,20 @@ class Match_demo:
     nd = 0  # 前搁浅计时
     ne = 8  # 后搁浅计时
 
+    CONTROL_DT = 0.02
+
+    STATE_INIT = "INIT"
+    STATE_CLIMB = "CLIMB"
+    STATE_FENCE_ALIGN_LEFT = "FENCE_ALIGN_LEFT"
+    STATE_FENCE_ALIGN_RIGHT = "FENCE_ALIGN_RIGHT"
+    STATE_FENCE_RECOVER = "FENCE_RECOVER"
+    STATE_SEARCH = "SEARCH"
+    STATE_TURN_TO_TARGET = "TURN_TO_TARGET"
+    STATE_ATTACK = "ATTACK"
+    STATE_AVOID_OWN_BLOCK = "AVOID_OWN_BLOCK"
+    STATE_EDGE_RECOVER = "EDGE_RECOVER"
+    STATE_SLIP_RECOVER = "SLIP_RECOVER"
+
     def __init__(self):
         self.uptech = UpTech()
         self.uptech.ADC_IO_Open()
@@ -72,6 +86,12 @@ class Match_demo:
         #开启Tag识别这里用了多线程
         self.apriltag_width = 0
         self.tag_id = -1
+        self.state = self.STATE_INIT
+        self._action_sequence = []
+        self._action_index = 0
+        self._action_deadline = 0
+        self._action_label = ""
+        self._stun_time = 0
         apriltag_detect = threading.Thread(target = self.apriltag_detect_thread)
         apriltag_detect.setDaemon(True)
         apriltag_detect.start()
@@ -378,7 +398,8 @@ class Match_demo:
         else:
             return 105
 
-    def start_match(self):
+    # Legacy blocking flow kept for field fallback; start_match below is active.
+    def _start_match_legacy(self):
         '''
         速度与旋转时间根据自身构型情况进行修改，保证速度与时间匹配能够正确旋转90度
         或180度
@@ -724,6 +745,367 @@ class Match_demo:
                 if slip == 105:
                     self.motion_controller.move_cmd(freeSpeed, freeSpeed)
                     time.sleep(0.01)
+
+    def _set_state(self, state, reason=""):
+        if self.state != state:
+            if reason:
+                print(f"State:{self.state}->{state} {reason}")
+            else:
+                print(f"State:{self.state}->{state}")
+        self.state = state
+
+    def _clear_action_sequence(self):
+        self._action_sequence = []
+        self._action_index = 0
+        self._action_deadline = 0
+        self._action_label = ""
+
+    def _start_action_sequence(self, state, label, steps, reason=""):
+        self._action_sequence = list(steps)
+        self._action_index = 0
+        self._action_deadline = 0
+        self._action_label = label
+        self._set_state(state, reason)
+
+    def _run_action_sequence(self):
+        if not self._action_sequence:
+            return False
+
+        now = time.monotonic()
+        if self._action_deadline and now >= self._action_deadline:
+            self._action_index += 1
+            self._action_deadline = 0
+
+        if self._action_index >= len(self._action_sequence):
+            self._clear_action_sequence()
+            return False
+
+        left_speed, right_speed, duration = self._action_sequence[self._action_index]
+        self.motion_controller.move_cmd(left_speed, right_speed)
+        if not self._action_deadline:
+            self._action_deadline = now + max(duration, self.CONTROL_DT)
+        return True
+
+    def _run_blocking_recovery(self, state, label, action, reason=""):
+        self._clear_action_sequence()
+        self._action_label = label
+        self._set_state(state, reason)
+        action()
+        self._clear_action_sequence()
+        self._set_state(self.STATE_SEARCH, "recovery done")
+
+    def _ensure_sequence(self, state, label, steps, reason=""):
+        if self.state != state or self._action_label != label or not self._action_sequence:
+            self._start_action_sequence(state, label, steps, reason)
+        return self._run_action_sequence()
+
+    def _left_align_ready(self):
+        io_0 = self.uptech.ADC_IO_GetInputLevel(0)
+        io_3 = self.uptech.ADC_IO_GetInputLevel(3)
+        ad_1 = self.uptech.ADC_Get_Channel(1)
+        return io_0 == 0 and ad_1 < self.RD and io_3 == 1
+
+    def _right_align_ready(self):
+        io_0 = self.uptech.ADC_IO_GetInputLevel(0)
+        io_1 = self.uptech.ADC_IO_GetInputLevel(1)
+        ad_3 = self.uptech.ADC_Get_Channel(3)
+        return io_0 == 0 and ad_3 < self.LD and io_1 == 1
+
+    def _handle_left_fence_align(self, freeSpeed):
+        self._clear_action_sequence()
+        self._set_state(self.STATE_FENCE_ALIGN_LEFT, "align platform")
+        if self._left_align_ready():
+            self._start_action_sequence(
+                self.STATE_FENCE_RECOVER,
+                "align-left-approach",
+                [(freeSpeed, freeSpeed, 0.3)],
+                "left align ready",
+            )
+            self._run_action_sequence()
+        else:
+            self.motion_controller.move_cmd(-freeSpeed + 50, freeSpeed - 50)
+
+    def _handle_right_fence_align(self, freeSpeed):
+        self._clear_action_sequence()
+        self._set_state(self.STATE_FENCE_ALIGN_RIGHT, "align platform")
+        if self._right_align_ready():
+            self._start_action_sequence(
+                self.STATE_FENCE_RECOVER,
+                "align-right-approach",
+                [(freeSpeed, freeSpeed, 0.3)],
+                "right align ready",
+            )
+            self._run_action_sequence()
+        else:
+            self.motion_controller.move_cmd(freeSpeed - 50, -freeSpeed + 50)
+
+    def _handle_off_platform(self, freeSpeed, turn):
+        fence = self.fence_detect()
+        if fence != 101:
+            self._stun_time = 0
+
+        if fence == 1:
+            self._run_blocking_recovery(
+                self.STATE_CLIMB,
+                "climb-behind",
+                self.motion_controller.go_up_behind_platform,
+                "behind platform",
+            )
+            return
+        if fence == 3:
+            self._run_blocking_recovery(
+                self.STATE_CLIMB,
+                "climb-ahead",
+                self.motion_controller.go_up_ahead_platform,
+                "ahead platform",
+            )
+            return
+
+        if self.state == self.STATE_FENCE_ALIGN_LEFT:
+            self._handle_left_fence_align(freeSpeed)
+            return
+        if self.state == self.STATE_FENCE_ALIGN_RIGHT:
+            self._handle_right_fence_align(freeSpeed)
+            return
+
+        if self._run_action_sequence():
+            return
+
+        if fence in (2, 16, 18):
+            self._handle_left_fence_align(freeSpeed)
+        elif fence in (4, 15, 17):
+            self._handle_right_fence_align(freeSpeed)
+        elif fence in (5, 6):
+            self._ensure_sequence(
+                self.STATE_FENCE_RECOVER,
+                f"fence:{fence}",
+                [(-freeSpeed, -freeSpeed, 0.4)],
+                "front fence",
+            )
+        elif fence in (7, 8, 10):
+            self._ensure_sequence(
+                self.STATE_FENCE_RECOVER,
+                f"fence:{fence}",
+                [(freeSpeed, freeSpeed, 0.4)],
+                "back fence or side enemy",
+            )
+        elif fence == 9:
+            self._ensure_sequence(
+                self.STATE_FENCE_RECOVER,
+                "fence:9",
+                [(freeSpeed, -freeSpeed, turn), (freeSpeed, freeSpeed, 0.4)],
+                "front/back target below platform",
+            )
+        elif fence == 11:
+            self._ensure_sequence(
+                self.STATE_FENCE_RECOVER,
+                "fence:11",
+                [(-freeSpeed, -freeSpeed, 0.5), (-freeSpeed, freeSpeed, turn)],
+                "three-side fence",
+            )
+        elif fence == 12:
+            self._ensure_sequence(
+                self.STATE_FENCE_RECOVER,
+                "fence:12",
+                [(300, 600, turn)],
+                "front-right-back fence",
+            )
+        elif fence == 13:
+            self._ensure_sequence(
+                self.STATE_FENCE_RECOVER,
+                "fence:13",
+                [(600, 300, turn)],
+                "front-left-back fence",
+            )
+        elif fence == 14:
+            self._ensure_sequence(
+                self.STATE_FENCE_RECOVER,
+                "fence:14",
+                [(-freeSpeed, freeSpeed, 0.2), (freeSpeed, freeSpeed, 0.3)],
+                "side-back fence",
+            )
+        elif fence == 101:
+            self._set_state(self.STATE_FENCE_RECOVER, "search platform")
+            self.motion_controller.move_cmd(freeSpeed, -freeSpeed)
+            self._stun_time += self.CONTROL_DT
+            if self._stun_time > 3.3:
+                self._stun_time = 0
+                self._start_action_sequence(
+                    self.STATE_FENCE_RECOVER,
+                    "fence:unstick",
+                    [(freeSpeed, freeSpeed, 0.5)],
+                    "unstick platform search",
+                )
+        else:
+            self._set_state(self.STATE_FENCE_RECOVER, f"unknown fence {fence}")
+            self.motion_controller.move_cmd(freeSpeed, -freeSpeed)
+
+    def _edge_recover_steps(self, edge, freeSpeed, turn):
+        edge_steps = {
+            1: [(-freeSpeed, -freeSpeed, 0.8), (freeSpeed, -freeSpeed, turn)],
+            2: [(-freeSpeed, -freeSpeed, 0.8), (-freeSpeed, freeSpeed, turn)],
+            3: [(freeSpeed, freeSpeed, 0.8), (-freeSpeed, freeSpeed, turn)],
+            4: [(freeSpeed, freeSpeed, 0.8), (freeSpeed, -freeSpeed, turn)],
+            5: [(-freeSpeed, -freeSpeed, 0.8), (freeSpeed, -freeSpeed, turn)],
+            6: [(freeSpeed, freeSpeed, 0.5)],
+            7: [(freeSpeed + 100, -freeSpeed, 0.5), (freeSpeed, freeSpeed, 0.3)],
+            8: [(-freeSpeed, freeSpeed + 100, 0.5), (freeSpeed, freeSpeed, 0.3)],
+            102: [(freeSpeed, -freeSpeed, self.CONTROL_DT)],
+        }
+        return edge_steps.get(edge)
+
+    def _handle_edge_recover(self, edge, freeSpeed, turn):
+        self._stun_time = 0
+        if edge == 9:
+            self._run_blocking_recovery(
+                self.STATE_SLIP_RECOVER,
+                "edge-slip-back",
+                self.motion_controller.slip_back,
+                "front side slipped",
+            )
+            return
+        if edge == 10:
+            self._run_blocking_recovery(
+                self.STATE_SLIP_RECOVER,
+                "edge-slip-front",
+                self.motion_controller.slip_front,
+                "back side slipped",
+            )
+            return
+
+        steps = self._edge_recover_steps(edge, freeSpeed, turn)
+        if steps is None:
+            steps = [(freeSpeed, -freeSpeed, self.CONTROL_DT)]
+        self._ensure_sequence(
+            self.STATE_EDGE_RECOVER,
+            f"edge:{edge}",
+            steps,
+            f"edge {edge}",
+        )
+
+    def _handle_on_platform(self, freeSpeed, enemySpeed, turn, turn_180):
+        edge = self.edge_detect()
+        if edge != 0:
+            self._handle_edge_recover(edge, freeSpeed, turn)
+            return
+
+        enemy = self.enemy_detect()
+        if enemy in (1, 11):
+            self._clear_action_sequence()
+            speed = enemySpeed if enemy == 11 else 700
+            self._set_state(self.STATE_ATTACK, "front target")
+            self.motion_controller.move_cmd(speed, speed)
+            return
+
+        if enemy == 5:
+            self._ensure_sequence(
+                self.STATE_AVOID_OWN_BLOCK,
+                "avoid-own-block",
+                [
+                    (-freeSpeed, -freeSpeed, 0.5),
+                    (-freeSpeed, freeSpeed, turn_180),
+                    (freeSpeed, freeSpeed, 0.5),
+                ],
+                "own block",
+            )
+            return
+
+        if self._run_action_sequence():
+            return
+
+        if enemy == 0:
+            self._set_state(self.STATE_SEARCH, "patrol")
+            self.motion_controller.move_cmd(freeSpeed, freeSpeed)
+        elif enemy == 2:
+            self._ensure_sequence(
+                self.STATE_TURN_TO_TARGET,
+                "target-right",
+                [(-freeSpeed, -freeSpeed, 0.3), (freeSpeed, -freeSpeed, 0.5)],
+                "target right",
+            )
+        elif enemy == 3:
+            self._ensure_sequence(
+                self.STATE_TURN_TO_TARGET,
+                "target-back",
+                [(freeSpeed, -freeSpeed, turn_180)],
+                "target back",
+            )
+        elif enemy == 4:
+            self._ensure_sequence(
+                self.STATE_TURN_TO_TARGET,
+                "target-left",
+                [(-freeSpeed, -freeSpeed, 0.3), (-freeSpeed, freeSpeed, 0.3)],
+                "target left",
+            )
+        else:
+            self._set_state(self.STATE_SEARCH, f"unknown enemy {enemy}")
+            self.motion_controller.move_cmd(freeSpeed, freeSpeed)
+
+    def _handle_slip(self, freeSpeed):
+        self._clear_action_sequence()
+        slip = self.slip_detect()
+        if slip == 0:
+            self._run_blocking_recovery(
+                self.STATE_SLIP_RECOVER,
+                "slip-right",
+                self.motion_controller.slip_right,
+                "left side slipped",
+            )
+        elif slip == 1:
+            self._run_blocking_recovery(
+                self.STATE_SLIP_RECOVER,
+                "slip-left",
+                self.motion_controller.slip_left,
+                "right side slipped",
+            )
+        elif slip == 2:
+            self._run_blocking_recovery(
+                self.STATE_SLIP_RECOVER,
+                "slip-back",
+                self.motion_controller.slip_back,
+                "front side slipped",
+            )
+        elif slip == 3:
+            self._run_blocking_recovery(
+                self.STATE_SLIP_RECOVER,
+                "slip-front",
+                self.motion_controller.slip_front,
+                "back side slipped",
+            )
+        else:
+            self._set_state(self.STATE_SLIP_RECOVER, f"unknown slip {slip}")
+            self.motion_controller.move_cmd(freeSpeed, freeSpeed)
+
+    def start_match(self):
+        '''
+        State-machine match loop. Long motor-only maneuvers are broken into
+        short timed steps so edge and front-target events can preempt turns.
+        '''
+        freeSpeed = 550
+        enemySpeed = 800
+        turn = 0.7
+        turn_180 = 1.2
+
+        self.motion_controller.default_platform()
+        self._set_state(self.STATE_SEARCH, "match start")
+        time.sleep(1)
+
+        while True:
+            stage = self.paltform_detect()
+            print(f"Stage:{stage}")
+
+            if stage == 0:
+                self._handle_off_platform(freeSpeed, turn)
+            elif stage == 1:
+                self._handle_on_platform(freeSpeed, enemySpeed, turn, turn_180)
+            elif stage == 2:
+                self._handle_slip(freeSpeed)
+            else:
+                self._clear_action_sequence()
+                self._set_state(self.STATE_SEARCH, f"unknown stage {stage}")
+                self.motion_controller.move_cmd(0, 0)
+
+            time.sleep(self.CONTROL_DT)
 
 match_demo = Match_demo()
 
