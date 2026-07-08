@@ -284,9 +284,6 @@ class Match_demo:
         io_6 =self.uptech.ADC_IO_GetInputLevel(6) #右后
         io_7 =self.uptech.ADC_IO_GetInputLevel(7) #左后
 
-        ad_0 = self.uptech.ADC_Get_Channel(0) #前方测距值
-        ad_2 = self.uptech.ADC_Get_Channel(2) #后方测距值
-
         if io_4 == 0 and io_5 == 0 and io_6 == 0 and io_7 == 0:
             # 四个红外光电都没有检测到边缘,离擂台边缘都很远
             return 0
@@ -314,12 +311,6 @@ class Match_demo:
         elif io_4 == 0 and io_5 == 1 and io_6 == 1 and io_7 == 0:
             # 右侧两个检测到边缘
             return 8  
-        elif io_4 == 1 and io_5 == 1 and io_6 == 1 and io_7 == 1 and ad_0 > 700:
-            # 卡台搁浅在擂台边缘，其中前方在擂台下，后方在擂台上
-            return 9
-        elif io_4 == 1 and io_5 == 1 and io_6 == 1 and io_7 == 1 and ad_2 > 700:
-            # 卡台搁浅在擂台边缘，其中前方在擂台上，后方在擂台下
-            return 10
 
 
         else:
@@ -620,22 +611,6 @@ class Match_demo:
     def _handle_edge_recover(self, edge, freeSpeed, turn):
         # 边缘和搁浅恢复优先级高于攻击，避免机器人为了推目标跌落。
         self._stun_time = 0
-        if edge == 9:
-            self._run_blocking_recovery(
-                self.STATE_SLIP_RECOVER,
-                "edge-slip-back",
-                self.motion_controller.slip_back,
-                "front side slipped",
-            )
-            return
-        if edge == 10:
-            self._run_blocking_recovery(
-                self.STATE_SLIP_RECOVER,
-                "edge-slip-front",
-                self.motion_controller.slip_front,
-                "back side slipped",
-            )
-            return
 
         steps = self._edge_recover_steps(edge, freeSpeed, turn)
         if steps is None:
