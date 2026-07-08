@@ -9,7 +9,7 @@ from urllib.parse import urlparse, parse_qs
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from motion_controller import MotionController
-from match_demo import match_demo
+from match_demo_state_machine import match_demo
 HOST = "0.0.0.0"
 PORT = 8000
 
