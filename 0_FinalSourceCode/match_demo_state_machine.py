@@ -6,6 +6,7 @@ from uptech import UpTech
 from motion_controller import MotionController
 
 import apriltag
+import json
 import threading
 import time
 import cv2
@@ -62,6 +63,10 @@ class Match_demo:
     ne = 8  # 后搁浅计时
 
     CONTROL_DT = 0.02
+    STATUS_PUBLISH_INTERVAL = 0.1
+    STATUS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime")
+    STATUS_FILE = os.path.join(STATUS_DIR, "match_status.json")
+    STATUS_TMP_FILE = STATUS_FILE + ".tmp"
 
     STATE_INIT = "INIT"
     STATE_CLIMB = "CLIMB"
@@ -94,10 +99,13 @@ class Match_demo:
         self._stun_time = 0
         self._match_running = False
         self._last_stage = None
+        self._state_reason = ""
+        self._last_status_publish = 0
         self.camera_activate = False
         apriltag_detect = threading.Thread(target = self.apriltag_detect_thread)
         apriltag_detect.setDaemon(True)
         apriltag_detect.start()
+        self._publish_status(force=True)
 
     def apriltag_detect_thread(self):
         print("detect start")
@@ -394,12 +402,42 @@ class Match_demo:
 
     def _set_state(self, state, reason=""):
         # 状态变化统一从这里打印，调试时可以直接观察状态跳转链路。
+        changed = self.state != state or self._state_reason != reason
         if self.state != state:
             if reason:
                 print(f"State:{self.state}->{state} {reason}")
             else:
                 print(f"State:{self.state}->{state}")
         self.state = state
+        self._state_reason = reason
+        self._publish_status(force=changed)
+
+    def _status_snapshot(self):
+        return {
+            "timestamp": time.time(),
+            "state": self.state,
+            "state_reason": self._state_reason,
+            "match_running": self._match_running,
+            "last_stage": self._last_stage,
+            "action_label": self._action_label,
+            "action_index": self._action_index,
+            "action_total": len(self._action_sequence),
+            "stun_time": self._stun_time,
+            "tag_id": self.tag_id,
+        }
+
+    def _publish_status(self, force=False):
+        now = time.monotonic()
+        if not force and now - self._last_status_publish < self.STATUS_PUBLISH_INTERVAL:
+            return
+        self._last_status_publish = now
+        try:
+            os.makedirs(self.STATUS_DIR, exist_ok=True)
+            with open(self.STATUS_TMP_FILE, "w", encoding="utf-8") as fp:
+                json.dump(self._status_snapshot(), fp, ensure_ascii=False, indent=2)
+            os.replace(self.STATUS_TMP_FILE, self.STATUS_FILE)
+        except Exception as exc:
+            print(f"status publish failed: {exc}")
 
     def _clear_action_sequence(self):
         # 清掉尚未完成的分段动作，供高优先级事件抢占当前动作。
@@ -723,6 +761,7 @@ class Match_demo:
         self._match_running = False
         self.camera_activate = False
         self._clear_action_sequence()
+        self._publish_status(force=True)
         try:
             self.motion_controller.move_cmd(0, 0)
         except Exception as exc:
@@ -767,6 +806,7 @@ class Match_demo:
                     self._set_state(self.STATE_SEARCH, f"unknown stage {stage}")
                     self.motion_controller.move_cmd(0, 0)
 
+                self._publish_status()
                 time.sleep(self.CONTROL_DT)
         except KeyboardInterrupt:
             print("KeyboardInterrupt received.")
