@@ -1,4 +1,5 @@
 .vscode/*
-__pycache__/*
-0_FinalSourceCode/__pycache__/*
+__pycache__/
+*.py[cod]
+*$py.class
 0_FinalSourceCode/runtime/
