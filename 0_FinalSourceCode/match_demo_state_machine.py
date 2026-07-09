@@ -253,7 +253,7 @@ class Match_demo(MatchHandlersMixin):
             print(f"opencv cleanup failed: {exc}")
 
     def start_match(self):
-        freeSpeed = 550
+        freeSpeed = 600
         enemySpeed = 800
         turn = 0.7
         turn_180 = 1.2
