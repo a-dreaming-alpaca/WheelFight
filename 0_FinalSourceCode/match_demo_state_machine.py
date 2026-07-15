@@ -1,187 +1,945 @@
+"""WheelFight 2026 preemptive hierarchical match controller."""
+
+from __future__ import annotations
+
+import argparse
 import json
 import os
-import sys
-import threading
 import time
+from collections import Counter
+from enum import Enum
+from typing import Optional
 
-import apriltag
-import cv2
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from match_detection import (
-    BD as SENSOR_BD,
-    FD as SENSOR_FD,
-    LD as SENSOR_LD,
-    RD as SENSOR_RD,
-    detect_edge,
-    detect_enemy,
-    detect_fence,
-    detect_platform,
-    detect_slip,
-    read_sensor_snapshot,
+from energy_vision import AprilTagEnergyDetector, EnergyClass, VisionResult
+from mega_sensor_reader import MegaSensorReader
+from motion_controller import DriveCommand, MotionController
+from perception import (
+    PerceptionEngine,
+    PerceptionSnapshot,
+    PlatformState,
+    bearing_error,
 )
-from match_handlers import MatchHandlersMixin
-from motion_controller import MotionController
-from uptech import UpTech
+from robot_config import DEFAULT_CONFIG, RobotConfig
 
 
-class Match_demo(MatchHandlersMixin):
-    FD = SENSOR_FD
-    RD = SENSOR_RD
-    BD = SENSOR_BD
-    LD = SENSOR_LD
+class RobotState(str, Enum):
+    BOOT_SELF_CHECK = "BOOT_SELF_CHECK"
+    WAIT_START_CLEAR = "WAIT_START_CLEAR"
+    WAIT_START_HANDS = "WAIT_START_HANDS"
+    WAIT_START_RELEASE = "WAIT_START_RELEASE"
+    START_RELEASE_DELAY = "START_RELEASE_DELAY"
+    DEPLOY_SHOVEL = "DEPLOY_SHOVEL"
 
-    na = 0
-    nd = 0
-    ne = 8
+    GROUND_SEARCH = "GROUND_SEARCH"
+    ALIGN_REAR = "ALIGN_REAR"
+    VERIFY_PLATFORM = "VERIFY_PLATFORM"
+    FENCE_ESCAPE = "FENCE_ESCAPE"
+    CLIMB_BACKWARD = "CLIMB_BACKWARD"
+    CLIMB_CLEAR_EDGE = "CLIMB_CLEAR_EDGE"
 
-    CONTROL_DT = 0.02
-    STATUS_PUBLISH_INTERVAL = 0.1
+    ARENA_SEARCH = "ARENA_SEARCH"
+    TARGET_ALIGN = "TARGET_ALIGN"
+    TARGET_CLASSIFY = "TARGET_CLASSIFY"
+    ATTACK_ENEMY = "ATTACK_ENEMY"
+    PUSH_GAIN_BLOCK = "PUSH_GAIN_BLOCK"
+    AVOID_BLOCK = "AVOID_BLOCK"
+    EDGE_RECOVER = "EDGE_RECOVER"
+    PARTIAL_FALL_RECOVER = "PARTIAL_FALL_RECOVER"
+
+    FAULT_STOP = "FAULT_STOP"
+    MATCH_END = "MATCH_END"
+
+
+GROUND_STATES = {
+    RobotState.GROUND_SEARCH,
+    RobotState.ALIGN_REAR,
+    RobotState.VERIFY_PLATFORM,
+    RobotState.FENCE_ESCAPE,
+    RobotState.CLIMB_BACKWARD,
+    RobotState.CLIMB_CLEAR_EDGE,
+}
+
+ARENA_STATES = {
+    RobotState.ARENA_SEARCH,
+    RobotState.TARGET_ALIGN,
+    RobotState.TARGET_CLASSIFY,
+    RobotState.ATTACK_ENEMY,
+    RobotState.PUSH_GAIN_BLOCK,
+    RobotState.AVOID_BLOCK,
+}
+
+PREMATCH_STATES = {
+    RobotState.BOOT_SELF_CHECK,
+    RobotState.WAIT_START_CLEAR,
+    RobotState.WAIT_START_HANDS,
+    RobotState.WAIT_START_RELEASE,
+    RobotState.START_RELEASE_DELAY,
+    RobotState.DEPLOY_SHOVEL,
+}
+
+
+class MatchController:
     STATUS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime")
     STATUS_FILE = os.path.join(STATUS_DIR, "match_status.json")
     STATUS_TMP_FILE = STATUS_FILE + ".tmp"
 
-    STATE_INIT = "INIT"
-    STATE_CLIMB = "CLIMB"
-    STATE_FENCE_ALIGN_LEFT = "FENCE_ALIGN_LEFT"
-    STATE_FENCE_ALIGN_RIGHT = "FENCE_ALIGN_RIGHT"
-    STATE_FENCE_RECOVER = "FENCE_RECOVER"
-    STATE_SEARCH = "SEARCH"
-    STATE_TURN_TO_TARGET = "TURN_TO_TARGET"
-    STATE_ATTACK = "ATTACK"
-    STATE_AVOID_OWN_BLOCK = "AVOID_OWN_BLOCK"
-    STATE_EDGE_RECOVER = "EDGE_RECOVER"
-    STATE_SLIP_RECOVER = "SLIP_RECOVER"
+    def __init__(
+        self,
+        sensor_reader=None,
+        motion_controller=None,
+        vision_detector=None,
+        config: RobotConfig = DEFAULT_CONFIG,
+        clock=time.monotonic,
+        wall_clock=time.time,
+    ) -> None:
+        self.config = config
+        self.clock = clock
+        self.wall_clock = wall_clock
+        self.sensor_reader = sensor_reader or MegaSensorReader(
+            stale_after=config.timing.sensor_stop_after
+        )
+        self.motion_controller = motion_controller or MotionController(
+            config=config.hardware
+        )
+        self.vision_detector = vision_detector or AprilTagEnergyDetector(
+            config=config.vision, clock=clock
+        )
+        self.perception = PerceptionEngine(config.sensors)
 
-    def __init__(self):
-        self.uptech = UpTech()
-        self.uptech.ADC_IO_Open()
-        self.motion_controller = MotionController()
+        now = self.clock()
+        self.state = RobotState.BOOT_SELF_CHECK
+        self.state_reason = "controller created"
+        self.state_entered = now
+        self.match_started = False
+        self.match_start_time: Optional[float] = None
+        self.running = False
+        self.vision_available = True
+        self.last_command = DriveCommand()
+        self.last_perception: Optional[PerceptionSnapshot] = None
+        self.last_vision = VisionResult.none(now)
 
-        options = apriltag.DetectorOptions(families="tag36h11")
-        self.tag_detector = apriltag.Detector(options)
+        self._condition_since: dict[str, float] = {}
+        self._vision_votes: Counter[EnergyClass] = Counter()
+        self._last_vision_vote_timestamp: Optional[float] = None
+        self._target_last_seen = now
+        self._edge_pattern = (False, False)
+        self._avoid_turn_sign = 1
+        self._alternate_turn_sign = 1
+        self._climb_seen_rear_on = False
+        self._fault_started = now
+        self._last_feature_signature = None
+        self._feature_changed_at = now
+        self._last_status_publish = 0.0
+        self._components_started = False
 
-        self.apriltag_width = 0
-        self.tag_id = -1
-        self.state = self.STATE_INIT
-        self._action_sequence = []
-        self._action_index = 0
-        self._action_deadline = 0
-        self._action_label = ""
-        self._stun_time = 0
-        self._match_running = False
-        self._last_stage = None
-        self._state_reason = ""
-        self._last_status_publish = 0
-        self.camera_activate = False
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+    def start_components(self) -> None:
+        if self._components_started:
+            return
+        self.sensor_reader.start()
+        try:
+            self.vision_detector.start()
+            self.vision_available = True
+        except RuntimeError as exc:
+            self.vision_available = False
+            print(f"vision degraded mode: {exc}")
+        self.motion_controller.raise_shovel()
+        self._components_started = True
 
-        apriltag_detect = threading.Thread(target=self.apriltag_detect_thread, daemon=True)
-        apriltag_detect.start()
+    def start_match(self) -> None:
+        self.start_components()
+        self.running = True
+        next_tick = self.clock()
+        try:
+            while self.running:
+                now = self.clock()
+                if now < next_tick:
+                    time.sleep(min(next_tick - now, self.config.timing.control_period))
+                    continue
+                self.step_once(now)
+                next_tick += self.config.timing.control_period
+                if now - next_tick > self.config.timing.control_period:
+                    next_tick = now + self.config.timing.control_period
+        except KeyboardInterrupt:
+            print("KeyboardInterrupt received.")
+        finally:
+            self.stop_match()
+
+    def stop_match(self) -> None:
+        self.running = False
+        try:
+            self.motion_controller.stop(force=True)
+        except Exception as exc:
+            print(f"motor stop failed: {exc}")
+        try:
+            self.sensor_reader.stop()
+        except Exception:
+            pass
+        try:
+            self.vision_detector.stop()
+        except Exception:
+            pass
+        close_motion = getattr(self.motion_controller, "close", None)
+        if callable(close_motion):
+            try:
+                close_motion()
+            except Exception as exc:
+                print(f"motion bus close failed: {exc}")
         self._publish_status(force=True)
 
-    def apriltag_detect_thread(self):
-        print("detect start")
-        self.camera_activate = True
-        VideoCaptureIndex = 0
-        while self.camera_activate:
-            cap = None
-            try:
-                cap = cv2.VideoCapture(VideoCaptureIndex)
-                if not cap.isOpened():
-                    VideoCaptureIndex = 1
-                    raise RuntimeError("attempt to connect camera")
+    # ------------------------------------------------------------------
+    # One control iteration
+    # ------------------------------------------------------------------
+    def step_once(self, now: Optional[float] = None) -> DriveCommand:
+        if now is None:
+            now = self.clock()
+        frame = self.sensor_reader.latest_frame()
+        if frame is None:
+            command = self._handle_missing_sensor(now)
+            return self._finish_step(command, now)
 
-                weight = 320
-                height = 240
-                cup_w = int((640 - weight) / 2) - 120
-                cup_h = int((480 - height) / 2) - 40
+        perception = self.perception.update(frame, now)
+        self.last_perception = perception
+        self.last_vision = self.vision_detector.latest_result()
 
-                while self.camera_activate:
-                    ret, frame = cap.read()
-                    if not ret:
-                        raise RuntimeError("frame read failed")
+        preempt_command = self._evaluate_safety_preemption(perception, now)
+        if preempt_command is not None:
+            return self._finish_step(preempt_command, now)
 
-                    frame = cv2.resize(frame, (640, 480))
-                    frame1 = frame[cup_h:cup_h + 440, cup_w:cup_w + 500]
-                    result = frame1.copy()
-                    gray = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
-                    apriltag_detect_results = self.tag_detector.detect(gray)
+        command = self._step_state(perception, self.last_vision, now)
+        command = self._apply_stuck_watchdog(command, perception, now)
+        return self._finish_step(command, now)
 
-                    if len(apriltag_detect_results) == 0:
-                        self.tag_id = -1
+    def _finish_step(self, command: DriveCommand, now: float) -> DriveCommand:
+        self.last_command = command
+        self.motion_controller.apply(command)
+        self._publish_status()
+        return command
 
-                    for tag in apriltag_detect_results:
-                        self.tag_id = tag.tag_id
-                        print("tag_id = {}".format(tag.tag_id))
-                        if self.tag_id != 2:
-                            print("front target is not own block")
-                        else:
-                            print("own block detected")
-                        cv2.circle(result, tuple(tag.corners[0].astype(int)), 4, (255, 0, 0), 2)
-                        cv2.circle(result, tuple(tag.corners[1].astype(int)), 4, (255, 0, 0), 2)
-                        cv2.circle(result, tuple(tag.corners[2].astype(int)), 4, (255, 0, 0), 2)
-                        cv2.circle(result, tuple(tag.corners[3].astype(int)), 4, (255, 0, 0), 2)
+    # ------------------------------------------------------------------
+    # Safety supervisor
+    # ------------------------------------------------------------------
+    def _handle_missing_sensor(self, now: float) -> DriveCommand:
+        if self.state != RobotState.BOOT_SELF_CHECK:
+            self._transition(RobotState.FAULT_STOP, "no Mega sensor frame", now)
+        return DriveCommand(label="sensor-missing-stop")
 
-                    cv2.imshow("result", result)
-                    if cv2.waitKey(1) & 0xff == ord("q"):
-                        self.camera_activate = False
-                        break
-                cap.release()
-            except Exception:
-                print("camera error,try to connect camera...")
-                if cap is not None:
-                    cap.release()
-                break
+    def _evaluate_safety_preemption(
+        self, p: PerceptionSnapshot, now: float
+    ) -> Optional[DriveCommand]:
+        timing = self.config.timing
+        if p.sensor_age > timing.sensor_stop_after:
+            if self.state != RobotState.FAULT_STOP:
+                self._transition(
+                    RobotState.FAULT_STOP,
+                    f"sensor stale {p.sensor_age:.3f}s",
+                    now,
+                )
+            return DriveCommand(label="sensor-stale-stop")
 
-        cv2.destroyAllWindows()
+        if (
+            self.match_started
+            and self.match_start_time is not None
+            and now - self.match_start_time >= timing.match_duration
+        ):
+            if self.state != RobotState.MATCH_END:
+                self._transition(RobotState.MATCH_END, "120 second match end", now)
+            return DriveCommand(label="match-end-stop")
 
-    def _sensor_snapshot(self):
-        return read_sensor_snapshot(self.uptech)
+        if self.state in (RobotState.FAULT_STOP, RobotState.MATCH_END):
+            return None
+        if self.state in PREMATCH_STATES:
+            return None
 
-    def paltform_detect(self):
-        return detect_platform(self._sensor_snapshot())
+        if self.state == RobotState.CLIMB_BACKWARD and p.rear_high_object:
+            self._transition(
+                RobotState.FENCE_ESCAPE, "high rear object during climb", now
+            )
+            return DriveCommand(label="climb-fence-stop")
 
-    def fence_detect(self):
-        return detect_fence(self._sensor_snapshot())
+        if self.state in ARENA_STATES:
+            if p.platform_state == PlatformState.OFF:
+                self._transition(RobotState.GROUND_SEARCH, "fully off platform", now)
+                return DriveCommand(label="fall-stop")
+            if p.platform_state in (
+                PlatformState.FRONT_TRANSITION,
+                PlatformState.REAR_TRANSITION,
+                PlatformState.UNKNOWN,
+            ):
+                self._transition(
+                    RobotState.PARTIAL_FALL_RECOVER,
+                    f"platform {p.platform_state.value}",
+                    now,
+                )
+                return DriveCommand(label="partial-fall-stop")
+            if p.front_left_edge or p.front_right_edge:
+                self._edge_pattern = (
+                    p.front_left_edge,
+                    p.front_right_edge,
+                )
+                self._transition(
+                    RobotState.EDGE_RECOVER,
+                    f"front edge {int(p.front_left_edge)}/{int(p.front_right_edge)}",
+                    now,
+                )
+                return DriveCommand(label="edge-stop")
 
-    def edge_detect(self):
-        return detect_edge(self._sensor_snapshot())
+        if self.state == RobotState.EDGE_RECOVER and p.platform_state in (
+            PlatformState.FRONT_TRANSITION,
+            PlatformState.REAR_TRANSITION,
+        ):
+            self._transition(
+                RobotState.PARTIAL_FALL_RECOVER,
+                "platform transition during edge recovery",
+                now,
+            )
+            return DriveCommand(label="edge-partial-stop")
+        return None
 
-    def enemy_detect(self):
-        return detect_enemy(self._sensor_snapshot(), self.tag_id)
-
-    def slip_detect(self):
-        return detect_slip(self._sensor_snapshot())
-
-    def _set_state(self, state, reason=""):
-        changed = self.state != state or self._state_reason != reason
-        if self.state != state:
-            if reason:
-                print(f"State:{self.state}->{state} {reason}")
-            else:
-                print(f"State:{self.state}->{state}")
-        self.state = state
-        self._state_reason = reason
-        self._publish_status(force=changed)
-
-    def _status_snapshot(self):
-        return {
-            "timestamp": time.time(),
-            "state": self.state,
-            "state_reason": self._state_reason,
-            "match_running": self._match_running,
-            "last_stage": self._last_stage,
-            "action_label": self._action_label,
-            "action_index": self._action_index,
-            "action_total": len(self._action_sequence),
-            "stun_time": self._stun_time,
-            "tag_id": self.tag_id,
+    # ------------------------------------------------------------------
+    # State dispatch
+    # ------------------------------------------------------------------
+    def _step_state(
+        self, p: PerceptionSnapshot, vision: VisionResult, now: float
+    ) -> DriveCommand:
+        handlers = {
+            RobotState.BOOT_SELF_CHECK: self._step_boot,
+            RobotState.WAIT_START_CLEAR: self._step_wait_start_clear,
+            RobotState.WAIT_START_HANDS: self._step_wait_start_hands,
+            RobotState.WAIT_START_RELEASE: self._step_wait_start_release,
+            RobotState.START_RELEASE_DELAY: self._step_start_release_delay,
+            RobotState.DEPLOY_SHOVEL: self._step_deploy_shovel,
+            RobotState.GROUND_SEARCH: self._step_ground_search,
+            RobotState.ALIGN_REAR: self._step_align_rear,
+            RobotState.VERIFY_PLATFORM: self._step_verify_platform,
+            RobotState.FENCE_ESCAPE: self._step_fence_escape,
+            RobotState.CLIMB_BACKWARD: self._step_climb_backward,
+            RobotState.CLIMB_CLEAR_EDGE: self._step_climb_clear_edge,
+            RobotState.ARENA_SEARCH: self._step_arena_search,
+            RobotState.TARGET_ALIGN: self._step_target_align,
+            RobotState.TARGET_CLASSIFY: self._step_target_classify,
+            RobotState.ATTACK_ENEMY: self._step_attack_enemy,
+            RobotState.PUSH_GAIN_BLOCK: self._step_push_gain,
+            RobotState.AVOID_BLOCK: self._step_avoid_block,
+            RobotState.EDGE_RECOVER: self._step_edge_recover,
+            RobotState.PARTIAL_FALL_RECOVER: self._step_partial_fall,
+            RobotState.FAULT_STOP: self._step_fault_stop,
+            RobotState.MATCH_END: self._step_match_end,
         }
+        return handlers[self.state](p, vision, now)
 
-    def _publish_status(self, force=False):
-        now = time.monotonic()
-        if not force and now - self._last_status_publish < self.STATUS_PUBLISH_INTERVAL:
+    # ------------------------------------------------------------------
+    # Prematch states
+    # ------------------------------------------------------------------
+    def _step_boot(self, p, vision, now) -> DriveCommand:
+        if p.platform_state != PlatformState.UNKNOWN:
+            self._transition(
+                RobotState.WAIT_START_CLEAR, "stable Mega sensor data", now
+            )
+        return DriveCommand(label="boot-stop")
+
+    def _step_wait_start_clear(self, p, vision, now) -> DriveCommand:
+        hands_clear = not p.start_left_hand_near and not p.start_right_hand_near
+        if self._held("start-clear", hands_clear, self.config.timing.start_clear_time, now):
+            self._transition(
+                RobotState.WAIT_START_HANDS, "start area sides are clear", now
+            )
+        return DriveCommand(label="wait-start-clear")
+
+    def _step_wait_start_hands(self, p, vision, now) -> DriveCommand:
+        both_near = p.start_left_hand_near and p.start_right_hand_near
+        if self._held(
+            "start-hands",
+            both_near,
+            self.config.timing.start_hand_confirm_time,
+            now,
+        ):
+            self._transition(
+                RobotState.WAIT_START_RELEASE, "both start hands detected", now
+            )
+        elif self._state_elapsed(now) > self.config.timing.start_gesture_timeout and (
+            p.start_left_hand_near or p.start_right_hand_near
+        ):
+            self._transition(
+                RobotState.WAIT_START_CLEAR, "incomplete start gesture", now
+            )
+        return DriveCommand(label="wait-start-hands")
+
+    def _step_wait_start_release(self, p, vision, now) -> DriveCommand:
+        both_released = not p.start_left_hand_near and not p.start_right_hand_near
+        if self._held(
+            "start-release",
+            both_released,
+            self.config.timing.start_release_confirm_time,
+            now,
+        ):
+            self.match_started = True
+            self.match_start_time = now
+            self._transition(
+                RobotState.START_RELEASE_DELAY, "start hands released", now
+            )
+        elif self._state_elapsed(now) > self.config.timing.start_gesture_timeout:
+            self._transition(
+                RobotState.WAIT_START_CLEAR, "start release timeout", now
+            )
+        return DriveCommand(label="wait-start-release")
+
+    def _step_start_release_delay(self, p, vision, now) -> DriveCommand:
+        if self._state_elapsed(now) >= self.config.timing.start_release_delay:
+            self.motion_controller.lower_shovel()
+            self._transition(RobotState.DEPLOY_SHOVEL, "deploy shovel", now)
+        return DriveCommand(label="start-hand-clearance-delay")
+
+    def _step_deploy_shovel(self, p, vision, now) -> DriveCommand:
+        if self._state_elapsed(now) >= self.config.timing.shovel_settle_time:
+            if p.platform_state == PlatformState.ON:
+                self._transition(RobotState.ARENA_SEARCH, "started on platform", now)
+            else:
+                self._transition(RobotState.GROUND_SEARCH, "begin platform search", now)
+        return DriveCommand(label="shovel-settle")
+
+    # ------------------------------------------------------------------
+    # Ground and climbing states
+    # ------------------------------------------------------------------
+    def _step_ground_search(self, p, vision, now) -> DriveCommand:
+        if p.platform_state == PlatformState.ON:
+            self._transition(
+                RobotState.CLIMB_CLEAR_EDGE, "platform detected while searching", now
+            )
+            return DriveCommand(label="ground-found-on-stop")
+        if p.clusters:
+            self._transition(RobotState.ALIGN_REAR, "ranging candidate found", now)
+            return DriveCommand(label="candidate-stop")
+        speed = self.config.motion.search_turn_speed
+        return DriveCommand(speed, -speed, "ground-search-turn")
+
+    def _step_align_rear(self, p, vision, now) -> DriveCommand:
+        target = p.cluster_nearest(180.0)
+        if target is None:
+            if self._state_elapsed(now) > 0.30:
+                self._transition(RobotState.GROUND_SEARCH, "candidate lost", now)
+            return DriveCommand(label="rear-align-target-lost")
+
+        error = bearing_error(target.bearing_deg, 180.0)
+        aligned = abs(error) <= self.config.sensors.alignment_tolerance_deg
+        rear_active = any(p.infrared_active[index] for index in (5, 6, 7))
+        if self._held(
+            "rear-aligned",
+            aligned and rear_active,
+            self.config.timing.ground_candidate_confirm,
+            now,
+        ):
+            self._transition(
+                RobotState.VERIFY_PLATFORM, "rear candidate aligned", now
+            )
+            return DriveCommand(label="rear-aligned-stop")
+        if self._state_elapsed(now) > self.config.timing.align_timeout:
+            self._transition(RobotState.GROUND_SEARCH, "rear alignment timeout", now)
+            return DriveCommand(label="rear-align-timeout-stop")
+        return self._turn_for_error(error, self.config.motion.align_turn_speed, "align-rear")
+
+    def _step_verify_platform(self, p, vision, now) -> DriveCommand:
+        if p.rear_high_object:
+            self._transition(RobotState.FENCE_ESCAPE, "rear high object is fence", now)
+            return DriveCommand(label="fence-confirmed-stop")
+
+        rear_active = any(p.infrared_active[index] for index in (5, 6, 7))
+        if self._held(
+            "low-platform",
+            rear_active and not p.rear_high_object,
+            self.config.timing.platform_verify_time,
+            now,
+        ):
+            self._climb_seen_rear_on = p.rear_on_platform
+            self._transition(
+                RobotState.CLIMB_BACKWARD, "low rear obstacle verified", now
+            )
+            return DriveCommand(label="platform-verified-stop")
+        if self._state_elapsed(now) > self.config.timing.platform_probe_timeout:
+            self._transition(RobotState.GROUND_SEARCH, "platform probe timeout", now)
+            return DriveCommand(label="platform-probe-timeout")
+        speed = self.config.motion.platform_probe_speed
+        return DriveCommand(-speed, -speed, "platform-probe-reverse")
+
+    def _step_fence_escape(self, p, vision, now) -> DriveCommand:
+        elapsed = self._state_elapsed(now)
+        motion = self.config.motion
+        timing = self.config.timing
+        if elapsed < timing.fence_escape_forward_time:
+            speed = motion.fence_escape_forward_speed
+            return DriveCommand(speed, speed, "fence-escape-forward")
+        if elapsed < timing.fence_escape_forward_time + timing.fence_escape_turn_time:
+            speed = motion.fence_escape_turn_speed * self._alternate_turn_sign
+            return DriveCommand(speed, -speed, "fence-escape-turn")
+        self._alternate_turn_sign *= -1
+        self._transition(RobotState.GROUND_SEARCH, "fence escape complete", now)
+        return DriveCommand(label="fence-escape-complete-stop")
+
+    def _step_climb_backward(self, p, vision, now) -> DriveCommand:
+        if p.rear_on_platform:
+            self._climb_seen_rear_on = True
+        if p.platform_state == PlatformState.ON and self._climb_seen_rear_on:
+            self._transition(RobotState.CLIMB_CLEAR_EDGE, "both grayscale on", now)
+            return DriveCommand(label="climb-success-stop")
+        if self._state_elapsed(now) > self.config.timing.climb_timeout:
+            self._transition(RobotState.FENCE_ESCAPE, "climb timeout withdraw", now)
+            return DriveCommand(label="climb-timeout-stop")
+        speed = self.config.motion.climb_speed
+        return DriveCommand(-speed, -speed, "climb-backward")
+
+    def _step_climb_clear_edge(self, p, vision, now) -> DriveCommand:
+        if p.platform_state == PlatformState.OFF:
+            self._transition(RobotState.GROUND_SEARCH, "climb clearance fell off", now)
+            return DriveCommand(label="climb-clear-fall-stop")
+        if p.platform_state == PlatformState.REAR_TRANSITION:
+            speed = self.config.motion.partial_recover_speed
+            return DriveCommand(speed, speed, "climb-clear-rear-recover")
+
+        clear = (
+            p.platform_state == PlatformState.ON
+            and not p.front_left_edge
+            and not p.front_right_edge
+        )
+        if self._held(
+            "climb-clear",
+            clear,
+            self.config.timing.climb_clear_stable_time,
+            now,
+        ):
+            self._transition(RobotState.ARENA_SEARCH, "clear of climb edge", now)
+            return DriveCommand(label="climb-clear-complete-stop")
+        if self._state_elapsed(now) > self.config.timing.climb_clear_timeout:
+            if p.platform_state == PlatformState.ON:
+                self._transition(
+                    RobotState.ARENA_SEARCH, "climb clearance timeout on platform", now
+                )
+            else:
+                self._transition(
+                    RobotState.PARTIAL_FALL_RECOVER,
+                    "climb clearance transition timeout",
+                    now,
+                )
+            return DriveCommand(label="climb-clear-timeout-stop")
+        speed = self.config.motion.climb_clear_speed
+        return DriveCommand(-speed, -speed, "climb-clear-reverse")
+
+    # ------------------------------------------------------------------
+    # Arena target behavior
+    # ------------------------------------------------------------------
+    def _step_arena_search(self, p, vision, now) -> DriveCommand:
+        if p.clusters:
+            self._transition(RobotState.TARGET_ALIGN, "arena target candidate", now)
+            return DriveCommand(label="arena-candidate-stop")
+        speed = self.config.motion.arena_search_turn_speed
+        return DriveCommand(speed, -speed, "arena-moving-search")
+
+    def _step_target_align(self, p, vision, now) -> DriveCommand:
+        target = p.strongest_cluster()
+        if target is None:
+            if self._state_elapsed(now) > self.config.timing.target_lost_grace:
+                self._transition(RobotState.ARENA_SEARCH, "target lost while aligning", now)
+            return DriveCommand(label="target-align-lost-stop")
+
+        self._target_last_seen = now
+        error = bearing_error(target.bearing_deg, 0.0)
+        if self._held(
+            "target-centered",
+            abs(error) <= self.config.sensors.front_target_tolerance_deg,
+            0.08,
+            now,
+        ):
+            self._transition(RobotState.TARGET_CLASSIFY, "front target centered", now)
+            return DriveCommand(label="target-centered-stop")
+        if self._state_elapsed(now) > self.config.timing.target_align_timeout:
+            self._transition(RobotState.ARENA_SEARCH, "target alignment timeout", now)
+            return DriveCommand(label="target-align-timeout-stop")
+        return self._turn_for_error(error, self.config.motion.align_turn_speed, "target-align")
+
+    def _step_target_classify(self, p, vision, now) -> DriveCommand:
+        target = p.cluster_nearest(0.0)
+        if target is None or abs(target.bearing_deg) > 35.0:
+            self._transition(RobotState.ARENA_SEARCH, "classification target lost", now)
+            return DriveCommand(label="classify-target-lost")
+
+        if vision.is_fresh(now, self.config.timing.camera_stale_after):
+            if vision.timestamp != self._last_vision_vote_timestamp:
+                self._last_vision_vote_timestamp = vision.timestamp
+                vote = vision.classification
+                if (
+                    vote in (EnergyClass.GAIN, EnergyClass.HARMFUL)
+                    and vision.confidence < self.config.vision.min_tag_confidence
+                ):
+                    vote = EnergyClass.UNKNOWN
+                if (
+                    vote == EnergyClass.NO_BLOCK_MARKER
+                    and not self._good_no_marker_view(target)
+                ):
+                    vote = EnergyClass.UNKNOWN
+                self._vision_votes[vote] += 1
+
+        required = self.config.vision.classify_votes
+        if self._vision_votes[EnergyClass.HARMFUL] >= required:
+            self._choose_avoid_direction(target.bearing_deg)
+            self._transition(RobotState.AVOID_BLOCK, "harmful tag confirmed", now)
+            return DriveCommand(label="harmful-confirmed-stop")
+        if self._vision_votes[EnergyClass.GAIN] >= required:
+            self._transition(RobotState.PUSH_GAIN_BLOCK, "gain tag confirmed", now)
+            return DriveCommand(label="gain-confirmed-stop")
+        if (
+            self._vision_votes[EnergyClass.NO_BLOCK_MARKER]
+            >= self.config.vision.no_marker_votes_for_enemy
+        ):
+            self._target_last_seen = now
+            self._transition(
+                RobotState.ATTACK_ENEMY, "good-view frames contain no block marker", now
+            )
+            return DriveCommand(label="enemy-confirmed-stop")
+        if self._state_elapsed(now) > self.config.timing.target_classify_timeout:
+            self._choose_avoid_direction(target.bearing_deg)
+            self._transition(RobotState.AVOID_BLOCK, "target classification uncertain", now)
+            return DriveCommand(label="classification-timeout-stop")
+        return DriveCommand(label="classifying-target-stop")
+
+    def _step_attack_enemy(self, p, vision, now) -> DriveCommand:
+        if self._fresh_class(vision, EnergyClass.HARMFUL, now):
+            self._choose_avoid_direction(0.0)
+            self._transition(RobotState.AVOID_BLOCK, "harmful tag during attack", now)
+            return DriveCommand(label="attack-harmful-stop")
+        if self._fresh_class(vision, EnergyClass.GAIN, now):
+            self._transition(
+                RobotState.TARGET_CLASSIFY, "tag appeared during attack", now
+            )
+            return DriveCommand(label="attack-tag-stop")
+
+        target = p.cluster_nearest(0.0)
+        if target is not None and abs(target.bearing_deg) <= 65.0:
+            self._target_last_seen = now
+            error = target.bearing_deg
+        elif now - self._target_last_seen > self.config.timing.target_lost_grace:
+            self._transition(RobotState.ARENA_SEARCH, "enemy target lost", now)
+            return DriveCommand(label="attack-target-lost-stop")
+        else:
+            error = 0.0
+
+        if self._state_elapsed(now) > self.config.timing.attack_timeout:
+            self._transition(RobotState.ARENA_SEARCH, "attack action timeout", now)
+            return DriveCommand(label="attack-timeout-stop")
+        return self._steered_forward(
+            self.config.motion.attack_speed, error, "attack-enemy"
+        )
+
+    def _step_push_gain(self, p, vision, now) -> DriveCommand:
+        if self._fresh_class(vision, EnergyClass.HARMFUL, now):
+            self._choose_avoid_direction(0.0)
+            self._transition(RobotState.AVOID_BLOCK, "harmful reclassification", now)
+            return DriveCommand(label="push-harmful-stop")
+        if not vision.is_fresh(now, self.config.timing.camera_stale_after):
+            self._choose_avoid_direction(0.0)
+            self._transition(RobotState.AVOID_BLOCK, "camera stale while pushing", now)
+            return DriveCommand(label="push-camera-stale-stop")
+
+        target = p.cluster_nearest(0.0)
+        if target is None:
+            if now - self._target_last_seen > self.config.timing.target_lost_grace:
+                self._transition(RobotState.ARENA_SEARCH, "gain block departed", now)
+                return DriveCommand(label="gain-target-lost-stop")
+            error = 0.0
+        else:
+            self._target_last_seen = now
+            error = target.bearing_deg
+
+        if self._state_elapsed(now) > self.config.timing.push_timeout:
+            self._transition(RobotState.ARENA_SEARCH, "gain push timeout", now)
+            return DriveCommand(label="gain-push-timeout-stop")
+        return self._steered_forward(
+            self.config.motion.push_gain_speed, error, "push-gain-block"
+        )
+
+    def _step_avoid_block(self, p, vision, now) -> DriveCommand:
+        if self._state_elapsed(now) >= self.config.timing.avoid_turn_time:
+            self._transition(RobotState.ARENA_SEARCH, "block avoidance complete", now)
+            return DriveCommand(label="avoid-complete-stop")
+        speed = self.config.motion.align_turn_speed * self._avoid_turn_sign
+        return DriveCommand(speed, -speed, "avoid-block-turn")
+
+    # ------------------------------------------------------------------
+    # Edge, fall and fault states
+    # ------------------------------------------------------------------
+    def _step_edge_recover(self, p, vision, now) -> DriveCommand:
+        elapsed = self._state_elapsed(now)
+        timing = self.config.timing
+        motion = self.config.motion
+        if elapsed < timing.edge_stop_time:
+            return DriveCommand(label="edge-immediate-stop")
+        if elapsed < timing.edge_stop_time + timing.edge_reverse_time:
+            speed = motion.edge_reverse_speed
+            return DriveCommand(-speed, -speed, "edge-short-reverse")
+
+        left, right = self._edge_pattern
+        if left and not right:
+            turn_sign = 1
+        elif right and not left:
+            turn_sign = -1
+        else:
+            turn_sign = self._alternate_turn_sign
+        speed = motion.edge_turn_speed * turn_sign
+        turn_complete = elapsed >= (
+            timing.edge_stop_time + timing.edge_reverse_time + timing.edge_turn_time
+        )
+        clear = (
+            p.platform_state == PlatformState.ON
+            and not p.front_left_edge
+            and not p.front_right_edge
+        )
+        if turn_complete and clear:
+            self._alternate_turn_sign *= -1
+            self._transition(RobotState.ARENA_SEARCH, "edge recovery complete", now)
+            return DriveCommand(label="edge-recovery-complete-stop")
+        if elapsed > timing.edge_recover_timeout:
+            if p.platform_state == PlatformState.ON:
+                self._transition(
+                    RobotState.ARENA_SEARCH, "edge recovery timeout but on platform", now
+                )
+            else:
+                self._transition(
+                    RobotState.PARTIAL_FALL_RECOVER,
+                    "edge recovery timeout",
+                    now,
+                )
+            return DriveCommand(label="edge-recovery-timeout-stop")
+        return DriveCommand(speed, -speed, "edge-turn-away")
+
+    def _step_partial_fall(self, p, vision, now) -> DriveCommand:
+        if p.platform_state == PlatformState.ON:
+            self._transition(RobotState.ARENA_SEARCH, "partial fall recovered", now)
+            return DriveCommand(label="partial-recovered-stop")
+        if p.platform_state == PlatformState.OFF:
+            self._transition(RobotState.GROUND_SEARCH, "partial fall became full fall", now)
+            return DriveCommand(label="partial-full-fall-stop")
+        if self._state_elapsed(now) > self.config.timing.partial_recover_timeout:
+            self._fault_started = now
+            self._transition(
+                RobotState.FAULT_STOP, "partial fall recovery timeout", now
+            )
+            return DriveCommand(label="partial-timeout-stop")
+
+        speed = self.config.motion.partial_recover_speed
+        if p.platform_state == PlatformState.FRONT_TRANSITION:
+            return DriveCommand(-speed, -speed, "front-transition-reverse")
+        if p.platform_state == PlatformState.REAR_TRANSITION:
+            return DriveCommand(speed, speed, "rear-transition-forward")
+        return DriveCommand(label="partial-unknown-stop")
+
+    def _step_fault_stop(self, p, vision, now) -> DriveCommand:
+        healthy = (
+            p.sensor_age <= self.config.timing.sensor_warning_after
+            and p.platform_state != PlatformState.UNKNOWN
+        )
+        if self._held(
+            "fault-healthy",
+            healthy,
+            self.config.timing.fault_recover_time,
+            now,
+        ):
+            if not self.match_started:
+                next_state = RobotState.WAIT_START_CLEAR
+            elif p.platform_state == PlatformState.ON:
+                next_state = RobotState.ARENA_SEARCH
+            elif p.platform_state == PlatformState.OFF:
+                next_state = RobotState.GROUND_SEARCH
+            else:
+                next_state = RobotState.PARTIAL_FALL_RECOVER
+            self._transition(next_state, "sensor fault recovered", now)
+        return DriveCommand(label="fault-stop")
+
+    def _step_match_end(self, p, vision, now) -> DriveCommand:
+        return DriveCommand(label="match-end-stop")
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    def _transition(self, state: RobotState, reason: str, now: float) -> None:
+        if self.state != state:
+            print(f"State:{self.state.value}->{state.value} {reason}")
+        self.state = state
+        self.state_reason = reason
+        self.state_entered = now
+        self._condition_since.clear()
+        if state == RobotState.TARGET_CLASSIFY:
+            self._vision_votes.clear()
+            self._last_vision_vote_timestamp = None
+        if state == RobotState.ATTACK_ENEMY:
+            self._target_last_seen = now
+        if state == RobotState.PUSH_GAIN_BLOCK:
+            self._target_last_seen = now
+        if state == RobotState.FAULT_STOP:
+            self._fault_started = now
+        self._publish_status(force=True)
+
+    def _state_elapsed(self, now: float) -> float:
+        return max(0.0, now - self.state_entered)
+
+    def _held(self, key: str, condition: bool, duration: float, now: float) -> bool:
+        if not condition:
+            self._condition_since.pop(key, None)
+            return False
+        since = self._condition_since.setdefault(key, now)
+        return now - since >= duration
+
+    @staticmethod
+    def _turn_for_error(error: float, speed: int, label: str) -> DriveCommand:
+        signed_speed = speed if error >= 0 else -speed
+        return DriveCommand(signed_speed, -signed_speed, label)
+
+    def _steered_forward(
+        self, base_speed: int, bearing: float, label: str
+    ) -> DriveCommand:
+        adjustment = int(round(self.config.motion.target_turn_gain * bearing))
+        limit = max(0, base_speed - self.config.motion.attack_min_speed)
+        adjustment = max(-limit, min(limit, adjustment))
+        return DriveCommand(base_speed + adjustment, base_speed - adjustment, label)
+
+    def _choose_avoid_direction(self, target_bearing: float) -> None:
+        if abs(target_bearing) < 5.0:
+            self._avoid_turn_sign = self._alternate_turn_sign
+            self._alternate_turn_sign *= -1
+        else:
+            # Target on the right -> turn counter-clockwise/left, and vice versa.
+            self._avoid_turn_sign = -1 if target_bearing > 0 else 1
+
+    def _fresh_class(
+        self, vision: VisionResult, classification: EnergyClass, now: float
+    ) -> bool:
+        return (
+            vision.classification == classification
+            and vision.confidence >= self.config.vision.min_tag_confidence
+            and vision.is_fresh(now, self.config.timing.camera_stale_after)
+        )
+
+    def _good_no_marker_view(self, target) -> bool:
+        threshold = self.config.sensors.no_marker_enemy_ir_threshold
+        if self.config.sensors.ir_near_is_high:
+            return target.representative_value >= threshold
+        return target.representative_value <= threshold
+
+    def _apply_stuck_watchdog(
+        self, command: DriveCommand, p: PerceptionSnapshot, now: float
+    ) -> DriveCommand:
+        signature = p.feature_signature()
+        moving = command.left_speed != 0 or command.right_speed != 0
+        if signature != self._last_feature_signature:
+            self._last_feature_signature = signature
+            self._feature_changed_at = now
+            return command
+        if not moving:
+            self._feature_changed_at = now
+            return command
+        watched_states = {
+            RobotState.ALIGN_REAR,
+            RobotState.VERIFY_PLATFORM,
+            RobotState.CLIMB_BACKWARD,
+            RobotState.ATTACK_ENEMY,
+            RobotState.PUSH_GAIN_BLOCK,
+        }
+        if (
+            self.state in watched_states
+            and now - self._feature_changed_at > self.config.timing.stuck_timeout
+        ):
+            if self.state in GROUND_STATES:
+                self._transition(RobotState.FENCE_ESCAPE, "stuck watchdog", now)
+            else:
+                self._choose_avoid_direction(0.0)
+                self._transition(RobotState.AVOID_BLOCK, "stuck watchdog", now)
+            self._feature_changed_at = now
+            return DriveCommand(label="stuck-watchdog-stop")
+        return command
+
+    # ------------------------------------------------------------------
+    # Status publication
+    # ------------------------------------------------------------------
+    def _status_snapshot(self) -> dict:
+        p = self.last_perception
+        vision = self.last_vision
+        sensor_link = {}
+        reader_status = getattr(self.sensor_reader, "status", None)
+        if callable(reader_status):
+            try:
+                sensor_link = reader_status()
+            except Exception as exc:
+                sensor_link = {"last_error": f"status unavailable: {exc}"}
+
+        vision_backend = {}
+        vision_status = getattr(self.vision_detector, "status", None)
+        if callable(vision_status):
+            try:
+                vision_backend = vision_status()
+            except Exception as exc:
+                vision_backend = {"last_error": f"status unavailable: {exc}"}
+
+        match_elapsed = None
+        if self.match_started and self.match_start_time is not None:
+            match_elapsed = self.clock() - self.match_start_time
+        status = {
+            "timestamp": self.wall_clock(),
+            "state": self.state.value,
+            "state_reason": self.state_reason,
+            "match_running": self.running,
+            "match_started": self.match_started,
+            "match_elapsed": match_elapsed,
+            "command": {
+                "left": self.last_command.left_speed,
+                "right": self.last_command.right_speed,
+                "label": self.last_command.label,
+            },
+            "shovel_pose": self.motion_controller.shovel_pose,
+            "sensor_link": sensor_link,
+            "vision_available": self.vision_available,
+            "vision_backend": vision_backend,
+            "vision": {
+                "classification": vision.classification.value,
+                "confidence": vision.confidence,
+                "tag_id": vision.tag_id,
+                "age": max(0.0, self.clock() - vision.timestamp),
+                "error": vision.error,
+            },
+        }
+        if p is not None:
+            status["sensor"] = {
+                "sequence": p.sequence,
+                "age": p.sensor_age,
+                "raw_analog": list(p.raw_analog),
+                "raw_digital": list(p.raw_digital),
+                "filtered_analog": list(p.filtered_analog),
+                "infrared_active": list(p.infrared_active),
+                "platform_state": p.platform_state.value,
+                "front_on_platform": p.front_on_platform,
+                "rear_on_platform": p.rear_on_platform,
+                "front_left_edge": p.front_left_edge,
+                "front_right_edge": p.front_right_edge,
+                "rear_high_object": p.rear_high_object,
+                "start_left_hand_near": p.start_left_hand_near,
+                "start_right_hand_near": p.start_right_hand_near,
+                "clusters": [
+                    {
+                        "indices": list(cluster.indices),
+                        "bearing": cluster.bearing_deg,
+                        "strength": cluster.strength,
+                        "value": cluster.representative_value,
+                    }
+                    for cluster in p.clusters
+                ],
+            }
+        return status
+
+    def _publish_status(self, force: bool = False) -> None:
+        now = self.clock()
+        if (
+            not force
+            and now - self._last_status_publish
+            < self.config.timing.status_publish_interval
+        ):
             return
         self._last_status_publish = now
         try:
@@ -192,106 +950,30 @@ class Match_demo(MatchHandlersMixin):
         except Exception as exc:
             print(f"status publish failed: {exc}")
 
-    def _clear_action_sequence(self):
-        self._action_sequence = []
-        self._action_index = 0
-        self._action_deadline = 0
-        self._action_label = ""
 
-    def _start_action_sequence(self, state, label, steps, reason=""):
-        self._action_sequence = list(steps)
-        self._action_index = 0
-        self._action_deadline = 0
-        self._action_label = label
-        self._set_state(state, reason)
-
-    def _run_action_sequence(self):
-        if not self._action_sequence:
-            return False
-
-        now = time.monotonic()
-        if self._action_deadline and now >= self._action_deadline:
-            self._action_index += 1
-            self._action_deadline = 0
-
-        if self._action_index >= len(self._action_sequence):
-            self._clear_action_sequence()
-            return False
-
-        left_speed, right_speed, duration = self._action_sequence[self._action_index]
-        self.motion_controller.move_cmd(left_speed, right_speed)
-        if not self._action_deadline:
-            self._action_deadline = now + max(duration, self.CONTROL_DT)
-        return True
-
-    def _run_blocking_recovery(self, state, label, action, reason=""):
-        self._clear_action_sequence()
-        self._action_label = label
-        self._set_state(state, reason)
-        action()
-        self._clear_action_sequence()
-        self._set_state(self.STATE_SEARCH, "recovery done")
-
-    def _ensure_sequence(self, state, label, steps, reason=""):
-        if self.state != state or self._action_label != label or not self._action_sequence:
-            self._start_action_sequence(state, label, steps, reason)
-        return self._run_action_sequence()
-
-    def stop_match(self):
-        print("Stopping match controller...")
-        self._match_running = False
-        self.camera_activate = False
-        self._clear_action_sequence()
-        self._publish_status(force=True)
-        try:
-            self.motion_controller.move_cmd(0, 0)
-        except Exception as exc:
-            print(f"motor stop failed: {exc}")
-        try:
-            cv2.destroyAllWindows()
-        except Exception as exc:
-            print(f"opencv cleanup failed: {exc}")
-
-    def start_match(self):
-        freeSpeed = 600
-        enemySpeed = 800
-        turn = 0.7
-        turn_180 = 1.2
-
-        self._match_running = True
-        try:
-            self.motion_controller.default_platform()
-            self._set_state(self.STATE_SEARCH, "match start")
-            time.sleep(1)
-
-            while self._match_running:
-                stage = self.paltform_detect()
-                print(f"Stage:{stage}")
-                if stage != self._last_stage:
-                    self._clear_action_sequence()
-                    self._last_stage = stage
-
-                if stage == 0:
-                    self._handle_off_platform(freeSpeed, turn)
-                elif stage == 1:
-                    self._handle_on_platform(freeSpeed, enemySpeed, turn, turn_180)
-                elif stage == 2:
-                    self._handle_slip(freeSpeed)
-                else:
-                    self._clear_action_sequence()
-                    self._set_state(self.STATE_SEARCH, f"unknown stage {stage}")
-                    self.motion_controller.move_cmd(0, 0)
-
-                self._publish_status()
-                time.sleep(self.CONTROL_DT)
-        except KeyboardInterrupt:
-            print("KeyboardInterrupt received.")
-        finally:
-            self.stop_match()
+# Keep the historical class name import-compatible without creating hardware at
+# module import time.
+Match_demo = MatchController
 
 
-match_demo = Match_demo()
+def build_default_controller(mega_port: Optional[str] = None) -> MatchController:
+    reader = MegaSensorReader(
+        port=mega_port,
+        stale_after=DEFAULT_CONFIG.timing.sensor_stop_after,
+    )
+    return MatchController(sensor_reader=reader)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="WheelFight 2026 match controller")
+    parser.add_argument(
+        "--mega-port",
+        default=None,
+        help="Mega serial device, for example /dev/serial/by-id/...; auto-detect if omitted",
+    )
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
-    match_demo.start_match()
+    arguments = parse_args()
+    build_default_controller(arguments.mega_port).start_match()

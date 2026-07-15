@@ -1,398 +1,256 @@
+"""Read-only web monitor for the WheelFight match controller.
+
+This process deliberately does not open the Mega serial port or the UpTech
+ADC interface. The match controller is the sole hardware owner and publishes
+an atomic JSON snapshot for this monitor to display.
+"""
+
+from __future__ import annotations
+
+import argparse
 import json
 import os
-import sys
-import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from uptech import UpTech
-from match_detection import detect_all, read_sensor_snapshot
-
-
-HOST = "0.0.0.0"
-PORT = 8001
+DEFAULT_HOST = "0.0.0.0"
+DEFAULT_PORT = 8001
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATUS_FILE = os.path.join(BASE_DIR, "runtime", "match_status.json")
-POLL_INTERVAL = 0.5
-STALE_STATUS_SECONDS = 2.0
+DEFAULT_STATUS_FILE = os.path.join(BASE_DIR, "runtime", "match_status.json")
+DEFAULT_STALE_SECONDS = 2.0
 
-HTML_PAGE = """<!DOCTYPE html>
-<html lang="en">
+
+HTML_PAGE = """<!doctype html>
+<html lang="zh-CN">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>WheelFight Monitor</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>WheelFight 运行监控</title>
   <style>
-    :root {
-      color-scheme: light;
-      font-family: Arial, sans-serif;
-      background: #f4f6f8;
-      color: #17202a;
-    }
-    body {
-      margin: 0;
-      min-height: 100vh;
-    }
-    main {
-      width: min(980px, calc(100vw - 24px));
-      margin: 16px auto;
-    }
-    header {
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 12px;
-      margin-bottom: 12px;
-    }
-    h1 {
-      margin: 0;
-      font-size: 24px;
-      font-weight: 700;
-    }
-    .stamp {
-      color: #566573;
-      font-size: 14px;
-      white-space: nowrap;
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
-    }
-    section {
-      background: #fff;
-      border: 1px solid #d9e0e7;
-      border-radius: 8px;
-      padding: 12px;
-      box-shadow: 0 1px 4px rgba(17, 24, 39, 0.05);
-    }
-    h2 {
-      margin: 0 0 10px;
-      font-size: 16px;
-    }
-    .pairs {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 8px;
-    }
-    .item {
-      display: flex;
-      justify-content: space-between;
-      gap: 10px;
-      padding: 7px 8px;
-      border: 1px solid #e6ebf0;
-      border-radius: 6px;
-      background: #fbfcfd;
-      min-height: 22px;
-    }
-    .label {
-      color: #5d6d7e;
-      font-size: 13px;
-    }
-    .value {
-      font-variant-numeric: tabular-nums;
-      font-weight: 700;
-      overflow-wrap: anywhere;
-      text-align: right;
-    }
-    .wide {
-      grid-column: 1 / -1;
-    }
-    .ok {
-      color: #1e8449;
-    }
-    .warn {
-      color: #b9770e;
-    }
-    .bad {
-      color: #a93226;
-    }
-    @media (max-width: 720px) {
-      header {
-        display: block;
-      }
-      .grid {
-        grid-template-columns: 1fr;
-      }
-      .pairs {
-        grid-template-columns: 1fr;
-      }
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; background: #0d1117; color: #e6edf3; }
+    main { width: min(1180px, calc(100vw - 24px)); margin: 18px auto 40px; }
+    header { display: flex; justify-content: space-between; gap: 16px;
+             align-items: baseline; margin-bottom: 14px; }
+    h1 { margin: 0; font-size: 24px; }
+    h2 { margin: 0 0 10px; font-size: 16px; color: #c9d1d9; }
+    .stamp { color: #8b949e; font-variant-numeric: tabular-nums; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px; }
+    section { border: 1px solid #30363d; border-radius: 9px; padding: 12px;
+              background: #161b22; }
+    .wide { grid-column: 1 / -1; }
+    .rows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 7px; }
+    .row, .ir { border: 1px solid #30363d; border-radius: 7px; padding: 8px;
+                background: #0d1117; }
+    .row { display: flex; justify-content: space-between; gap: 12px; }
+    .label { color: #8b949e; font-size: 13px; }
+    .value { font-weight: 650; text-align: right; overflow-wrap: anywhere;
+             font-variant-numeric: tabular-nums; }
+    .ir-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+               gap: 7px; }
+    .ir strong { display: block; margin-bottom: 5px; }
+    .ir small { color: #8b949e; font-variant-numeric: tabular-nums; }
+    .ok { color: #3fb950; } .warn { color: #d29922; } .bad { color: #f85149; }
+    pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere;
+          font: 13px/1.5 ui-monospace, monospace; }
+    @media (max-width: 760px) {
+      header { display: block; } .grid { grid-template-columns: 1fr; }
+      .wide { grid-column: auto; } .rows { grid-template-columns: 1fr; }
+      .ir-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
   </style>
 </head>
 <body>
-  <main>
-    <header>
-      <h1>WheelFight Monitor</h1>
-      <div class="stamp" id="updated">--</div>
-    </header>
-    <div class="grid">
-      <section>
-        <h2>Codes</h2>
-        <div class="pairs" id="codes"></div>
-      </section>
-      <section>
-        <h2>Match State</h2>
-        <div class="pairs" id="match"></div>
-      </section>
-      <section>
-        <h2>IO</h2>
-        <div class="pairs" id="io"></div>
-      </section>
-      <section>
-        <h2>ADC</h2>
-        <div class="pairs" id="adc"></div>
-      </section>
-      <section class="wide">
-        <h2>Status</h2>
-        <div class="pairs" id="status"></div>
-      </section>
-    </div>
-  </main>
-  <script>
-    function clsForStatus(data) {
-      if (data.last_error) return 'bad';
-      if (!data.status_file_ok || data.status_age === null || data.status_age > 2) return 'warn';
-      return 'ok';
+<main>
+  <header><h1>WheelFight 运行监控</h1><div id="stamp" class="stamp">等待状态…</div></header>
+  <div class="grid">
+    <section><h2>状态机与动作</h2><div id="match" class="rows"></div></section>
+    <section><h2>安全与台面</h2><div id="safety" class="rows"></div></section>
+    <section><h2>Mega 通信</h2><div id="link" class="rows"></div></section>
+    <section><h2>摄像头识别</h2><div id="vision" class="rows"></div></section>
+    <section class="wide"><h2>12 路红外测距（A0 正前，顺时针）</h2><div id="ir" class="ir-grid"></div></section>
+    <section><h2>灰度与数字量原始值</h2><div id="raw" class="rows"></div></section>
+    <section><h2>目标簇</h2><pre id="clusters">--</pre></section>
+  </div>
+</main>
+<script>
+  const bearings = [0, 30, 60, 90, 120, 150, 180, -150, -120, -90, -60, -30];
+  const at = (obj, path, fallback='--') => {
+    let value = obj;
+    for (const part of path.split('.')) value = value && value[part];
+    return value === null || value === undefined || value === '' ? fallback : value;
+  };
+  const fmt = (value) => typeof value === 'number' && !Number.isInteger(value)
+    ? value.toFixed(3) : String(value);
+  function renderRows(id, rows) {
+    const root = document.getElementById(id); root.innerHTML = '';
+    for (const [labelText, rawValue, className=''] of rows) {
+      const row = document.createElement('div'); row.className = 'row';
+      const label = document.createElement('span'); label.className = 'label';
+      const value = document.createElement('span'); value.className = `value ${className}`;
+      label.textContent = labelText; value.textContent = fmt(rawValue);
+      row.append(label, value); root.appendChild(row);
     }
-    function valueText(value) {
-      if (value === null || value === undefined || value === '') return '--';
-      if (typeof value === 'number') return Number.isInteger(value) ? String(value) : value.toFixed(3);
-      return String(value);
+  }
+  function render(data) {
+    const monitor = data.monitor || {};
+    const sensor = data.sensor || {};
+    const link = data.sensor_link || {};
+    const vision = data.vision || {};
+    const backend = data.vision_backend || {};
+    const statusClass = monitor.file_ok && !monitor.stale ? 'ok' : (monitor.file_ok ? 'warn' : 'bad');
+    document.getElementById('stamp').className = `stamp ${statusClass}`;
+    document.getElementById('stamp').textContent = monitor.file_ok
+      ? `状态文件 ${fmt(at(data, 'monitor.age_seconds'))} 秒前更新`
+      : at(data, 'monitor.error');
+    renderRows('match', [
+      ['状态', at(data, 'state')], ['原因', at(data, 'state_reason')],
+      ['已收到开赛手势', at(data, 'match_started')], ['比赛计时/s', at(data, 'match_elapsed')],
+      ['左/右指令', `${at(data, 'command.left')}/${at(data, 'command.right')}`],
+      ['动作', at(data, 'command.label')], ['铲子', at(data, 'shovel_pose')],
+      ['控制进程运行', at(data, 'match_running')]
+    ]);
+    renderRows('safety', [
+      ['台面状态', at(data, 'sensor.platform_state')],
+      ['前/后在台上', `${at(data, 'sensor.front_on_platform')}/${at(data, 'sensor.rear_on_platform')}`],
+      ['前左/前右边缘', `${at(data, 'sensor.front_left_edge')}/${at(data, 'sensor.front_right_edge')}`],
+      ['后方高物体', at(data, 'sensor.rear_high_object')],
+      ['左/右开赛手势', `${at(data, 'sensor.start_left_hand_near')}/${at(data, 'sensor.start_right_hand_near')}`],
+      ['传感器帧年龄/s', at(data, 'sensor.age')]
+    ]);
+    renderRows('link', [
+      ['端口', at(data, 'sensor_link.port')], ['已连接', at(data, 'sensor_link.connected')],
+      ['帧率/Hz', at(data, 'sensor_link.rate_hz')], ['序号', at(data, 'sensor.sequence')],
+      ['有效帧', at(data, 'sensor_link.valid_frames')], ['坏帧', at(data, 'sensor_link.invalid_frames')],
+      ['CRC 错误', at(data, 'sensor_link.checksum_errors')], ['丢帧', at(data, 'sensor_link.dropped_frames')],
+      ['重复帧', at(data, 'sensor_link.duplicate_frames')], ['串口错误', at(data, 'sensor_link.last_error')]
+    ]);
+    renderRows('vision', [
+      ['分类', at(data, 'vision.classification')], ['Tag ID', at(data, 'vision.tag_id')],
+      ['置信度', at(data, 'vision.confidence')], ['结果年龄/s', at(data, 'vision.age')],
+      ['后端健康', at(data, 'vision_backend.healthy')], ['摄像头序号', at(data, 'vision_backend.camera_index')],
+      ['可用模式', at(data, 'vision_available')], ['错误', at(data, 'vision.error', at(data, 'vision_backend.last_error'))]
+    ]);
+    const raw = sensor.raw_analog || [], filtered = sensor.filtered_analog || [];
+    const active = sensor.infrared_active || [], irRoot = document.getElementById('ir');
+    irRoot.innerHTML = '';
+    for (let i = 0; i < 12; i++) {
+      const card = document.createElement('div'); card.className = `ir ${active[i] ? 'warn' : ''}`;
+      const title = document.createElement('strong'); title.textContent = `A${i} · ${bearings[i]}°`;
+      const detail = document.createElement('small');
+      detail.textContent = `原始 ${raw[i] ?? '--'} · 滤波 ${filtered[i] ?? '--'} · 触发 ${active[i] ?? '--'}`;
+      card.append(title, detail); irRoot.appendChild(card);
     }
-    function renderPairs(id, data, names) {
-      const root = document.getElementById(id);
-      root.innerHTML = '';
-      names.forEach((name) => {
-        const row = document.createElement('div');
-        row.className = 'item';
-        const label = document.createElement('span');
-        label.className = 'label';
-        label.textContent = name;
-        const value = document.createElement('span');
-        value.className = 'value';
-        value.textContent = valueText(data[name]);
-        row.appendChild(label);
-        row.appendChild(value);
-        root.appendChild(row);
-      });
-    }
-    function renderIndexed(id, data, prefix) {
-      const names = Object.keys(data || {}).sort((a, b) => Number(a) - Number(b));
-      const values = {};
-      names.forEach((name) => values[`${prefix}${name}`] = data[name]);
-      renderPairs(id, values, Object.keys(values));
-    }
-    function updateStatus() {
-      fetch('/status')
-        .then((response) => response.json())
-        .then((data) => {
-          document.getElementById('updated').textContent = new Date().toLocaleTimeString();
-          renderPairs('codes', data.codes || {}, ['fence', 'edge', 'enemy', 'stage', 'slip']);
-          renderPairs('match', data.match || {}, [
-            'state',
-            'state_reason',
-            'match_running',
-            'last_stage',
-            'action_label',
-            'action_index',
-            'action_total',
-            'stun_time',
-            'tag_id'
-          ]);
-          renderIndexed('io', data.raw_io || {}, 'IO');
-          renderIndexed('adc', data.raw_adc || {}, 'AD');
-          renderPairs('status', data, ['status_file_ok', 'status_age', 'last_error']);
-          document.getElementById('status').className = `pairs ${clsForStatus(data)}`;
-        })
-        .catch((error) => {
-          document.getElementById('updated').textContent = `status error: ${error}`;
-        });
-    }
-    setInterval(updateStatus, 500);
-    updateStatus();
-  </script>
+    const digital = sensor.raw_digital || [];
+    renderRows('raw', [
+      ['A12 前灰度', raw[12] ?? '--'], ['A13 后灰度', raw[13] ?? '--'],
+      ['A12 前滤波', filtered[12] ?? '--'], ['A13 后滤波', filtered[13] ?? '--'],
+      ['DI0 前左', digital[0] ?? '--'], ['DI1 前右', digital[1] ?? '--'],
+      ['DI2 后方', digital[2] ?? '--']
+    ]);
+    document.getElementById('clusters').textContent = JSON.stringify(sensor.clusters || [], null, 2);
+  }
+  async function refresh() {
+    try { const response = await fetch('/status', {cache: 'no-store'}); render(await response.json()); }
+    catch (error) { document.getElementById('stamp').textContent = `读取失败：${error}`; }
+  }
+  setInterval(refresh, 500); refresh();
+</script>
 </body>
 </html>
 """
 
 
-class Monitor:
-    def __init__(self):
-        self.uptech = UpTech()
-        self.last_error = ""
-        self.status = self._empty_status("starting")
-        self._lock = threading.Lock()
-        self._last_print_key = None
+class StatusReader:
+    def __init__(
+        self,
+        status_file: str = DEFAULT_STATUS_FILE,
+        stale_seconds: float = DEFAULT_STALE_SECONDS,
+    ) -> None:
+        self.status_file = status_file
+        self.stale_seconds = stale_seconds
+
+    def read(self) -> dict:
         try:
-            self.uptech.ADC_IO_Open()
-        except Exception as exc:
-            self.last_error = f"ADC_IO_Open failed: {exc}"
-            print(self.last_error)
-        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
-        self._thread.start()
-
-    def _empty_status(self, error=""):
-        return {
-            "raw_io": {str(i): None for i in range(8)},
-            "raw_adc": {str(i): None for i in range(7)},
-            "codes": {
-                "fence": None,
-                "edge": None,
-                "enemy": None,
-                "stage": None,
-                "slip": None,
-            },
-            "match": {},
-            "status_age": None,
-            "status_file_ok": False,
-            "last_error": error,
-        }
-
-    def _read_match_status(self):
-        try:
-            with open(STATUS_FILE, "r", encoding="utf-8") as fp:
-                match = json.load(fp)
-            timestamp = match.get("timestamp")
-            age = time.time() - timestamp if isinstance(timestamp, (int, float)) else None
-            return match, age, True, ""
-        except FileNotFoundError:
-            return {}, None, False, "match status file not found"
-        except Exception as exc:
-            return {}, None, False, f"match status read failed: {exc}"
-
-    def _read_sensors(self):
-        snapshot = read_sensor_snapshot(self.uptech)
-        return snapshot["raw_io"], snapshot["raw_adc"], snapshot
-
-    def _collect_status(self):
-        match, age, file_ok, file_error = self._read_match_status()
-        try:
-            raw_io, raw_adc, snapshot = self._read_sensors()
-            tag_id = match.get("tag_id", -1)
-            status = {
-                "raw_io": raw_io,
-                "raw_adc": raw_adc,
-                "codes": detect_all(snapshot, tag_id),
-                "match": match,
-                "status_age": age,
-                "status_file_ok": file_ok,
-                "last_error": file_error,
+            with open(self.status_file, "r", encoding="utf-8") as fp:
+                status = json.load(fp)
+            if not isinstance(status, dict):
+                raise ValueError("status root must be a JSON object")
+            timestamp = status.get("timestamp")
+            age = (
+                max(0.0, time.time() - timestamp)
+                if isinstance(timestamp, (int, float))
+                else None
+            )
+            status["monitor"] = {
+                "file_ok": True,
+                "age_seconds": age,
+                "stale": age is None or age > self.stale_seconds,
+                "error": "",
             }
-            self.last_error = file_error
             return status
+        except FileNotFoundError:
+            error = f"状态文件不存在：{self.status_file}"
         except Exception as exc:
-            self.last_error = f"sensor read failed: {exc}"
-            status = self._empty_status(self.last_error)
-            status["match"] = match
-            status["status_age"] = age
-            status["status_file_ok"] = file_ok
-            return status
-
-    def _print_if_changed(self, status):
-        match_for_key = dict(status["match"])
-        match_for_key.pop("timestamp", None)
-        key = json.dumps(
-            {
-                "raw_io": status["raw_io"],
-                "raw_adc": status["raw_adc"],
-                "codes": status["codes"],
-                "match": match_for_key,
-                "last_error": status["last_error"],
-            },
-            sort_keys=True,
-            ensure_ascii=False,
-        )
-        if key == self._last_print_key:
-            return
-        self._last_print_key = key
-
-        match = status.get("match", {})
-        codes = status.get("codes", {})
-        io_line = " ".join(f"IO{i}={status['raw_io'].get(str(i))}" for i in range(8))
-        adc_line = " ".join(f"AD{i}={status['raw_adc'].get(str(i))}" for i in range(7))
-        code_line = " ".join(f"{name}={codes.get(name)}" for name in ("fence", "edge", "enemy", "stage", "slip"))
-        match_line = (
-            f"state={match.get('state', '--')} "
-            f"reason={match.get('state_reason', '--')} "
-            f"running={match.get('match_running', '--')} "
-            f"action={match.get('action_label', '--')} "
-            f"step={match.get('action_index', '--')}/{match.get('action_total', '--')} "
-            f"tag={match.get('tag_id', '--')}"
-        )
-        age = status.get("status_age")
-        age_text = "--" if age is None else f"{age:.2f}s"
-        print(f"[{time.strftime('%H:%M:%S')}] {code_line} age={age_text}")
-        print(f"  {match_line}")
-        print(f"  {io_line}")
-        print(f"  {adc_line}")
-        if status.get("last_error"):
-            print(f"  error={status['last_error']}")
-
-    def _poll_loop(self):
-        while True:
-            status = self._collect_status()
-            with self._lock:
-                self.status = status
-            self._print_if_changed(status)
-            time.sleep(POLL_INTERVAL)
-
-    def current_status(self):
-        with self._lock:
-            return json.loads(json.dumps(self.status, ensure_ascii=False))
-
-    def close(self):
-        try:
-            self.uptech.ADC_IO_Close()
-        except Exception:
-            pass
+            error = f"状态文件读取失败：{exc}"
+        return {
+            "monitor": {
+                "file_ok": False,
+                "age_seconds": None,
+                "stale": True,
+                "error": error,
+            }
+        }
 
 
 class MonitorHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == "/":
-            self._respond_text(HTML_PAGE, "text/html; charset=utf-8")
+    def do_GET(self) -> None:
+        if self.path == "/" or self.path.startswith("/?"):
+            self._respond(HTML_PAGE.encode("utf-8"), "text/html; charset=utf-8")
             return
-        if self.path == "/status":
-            self._respond_json(self.server.monitor.current_status())
+        if self.path == "/status" or self.path.startswith("/status?"):
+            body = json.dumps(
+                self.server.status_reader.read(), ensure_ascii=False
+            ).encode("utf-8")
+            self._respond(body, "application/json; charset=utf-8")
             return
         self.send_error(404, "Not Found")
 
-    def log_message(self, format, *args):
+    def log_message(self, format: str, *args) -> None:
         return
 
-    def _respond_text(self, text, content_type):
-        body = text.encode("utf-8")
+    def _respond(self, body: bytes, content_type: str) -> None:
         self.send_response(200)
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _respond_json(self, data):
-        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
 
-def run_monitor():
-    monitor = Monitor()
-    server = ThreadingHTTPServer((HOST, PORT), MonitorHandler)
-    server.monitor = monitor
-    print(f"WheelFight monitor running on http://{HOST}:{PORT}")
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="WheelFight read-only web monitor")
+    parser.add_argument("--host", default=DEFAULT_HOST)
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--status-file", default=DEFAULT_STATUS_FILE)
+    return parser.parse_args()
+
+
+def run_monitor() -> None:
+    args = parse_args()
+    server = ThreadingHTTPServer((args.host, args.port), MonitorHandler)
+    server.status_reader = StatusReader(args.status_file)
+    print(f"WheelFight monitor: http://{args.host}:{args.port}")
+    print(f"Read-only status source: {os.path.abspath(args.status_file)}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nStopping monitor...")
     finally:
-        monitor.close()
         server.server_close()
-        print("Monitor stopped.")
 
 
 if __name__ == "__main__":

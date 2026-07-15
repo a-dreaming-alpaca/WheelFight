@@ -1,185 +1,128 @@
-import os
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+"""Hardware motion boundary for the four-motor differential chassis."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Optional
+
+from robot_config import DEFAULT_CONFIG, HardwareConfig
 
 
-from uptech import UpTech
-import time
+@dataclass(frozen=True)
+class DriveCommand:
+    left_speed: int = 0
+    right_speed: int = 0
+    label: str = "stop"
+
 
 class MotionController:
-    def __init__(self):
-        self.uptech = UpTech()
+    """Owns all writes to the CDS motor/servo bus.
 
-        self.uptech.CDS_Open()
-        time.sleep(0.5)
-        self.servo_speed = 800
-        self.uptech.CDS_SetMode(3, 0)
-        self.uptech.CDS_SetMode(4, 0)
-        self.uptech.CDS_SetMode(5, 0)
-        self.uptech.CDS_SetMode(6, 0)
-        self.uptech.CDS_SetMode(7, 0)  
-        self.uptech.CDS_SetMode(8, 0)     
-        self.uptech.CDS_SetMode(11, 0)     
-        self.uptech.CDS_SetMode(12, 0)  
+    The physical chassis has two motors per side, wired as one left command and
+    one right command. Positive left/right values mean chassis-forward. The
+    right CDS command is inverted because the motors are mirrored physically.
+    """
 
-    # 速度指令,参数分别为左速度和右速度，自由控制-开环控制器
-    def move_cmd(self, left_speed = 0, right_speed = 0):
-        self.uptech.CDS_SetSpeed(2, left_speed)
-        self.uptech.CDS_SetSpeed(1, -right_speed)
+    def __init__(
+        self,
+        uptech=None,
+        config: HardwareConfig = DEFAULT_CONFIG.hardware,
+        open_bus: bool = True,
+    ) -> None:
+        if uptech is None:
+            # Import lazily so perception/state-machine tests do not require
+            # libuptech.so on the development computer.
+            from uptech import UpTech
 
-    # 默认为前后爪都收起的状态
-    def default_platform(self):
-        self.uptech.CDS_SetAngle(5, 224, self.servo_speed)
-        self.uptech.CDS_SetAngle(6, 800, self.servo_speed)
-        self.uptech.CDS_SetAngle(7, 800, self.servo_speed)
-        self.uptech.CDS_SetAngle(8, 224, self.servo_speed)
-        time.sleep(0.01)
-        self.uptech.CDS_SetAngle(5, 224, self.servo_speed)
-        self.uptech.CDS_SetAngle(6, 800, self.servo_speed)
-        self.uptech.CDS_SetAngle(7, 800, self.servo_speed)
-        self.uptech.CDS_SetAngle(8, 224, self.servo_speed)
+            uptech = UpTech()
 
-    # 支撑前爪,发两遍确认发送成功
-    def pack_up_ahead(self):
-        self.uptech.CDS_SetAngle(5, 750, self.servo_speed)
-        self.uptech.CDS_SetAngle(6, 274, self.servo_speed)
-        time.sleep(0.01)
-        self.uptech.CDS_SetAngle(5, 750, self.servo_speed)
-        self.uptech.CDS_SetAngle(6, 274, self.servo_speed)
+        self.uptech = uptech
+        self.config = config
+        self._last_drive: Optional[tuple[int, int]] = None
+        self._shovel_pose = "unknown"
+        self._closed = False
 
-    # 支撑后爪，发两遍确认发送成功
-    def pack_up_behind(self):
-        self.uptech.CDS_SetAngle(7, 274, self.servo_speed)
-        self.uptech.CDS_SetAngle(8, 750, self.servo_speed)
-        time.sleep(0.01)
-        self.uptech.CDS_SetAngle(7, 274, self.servo_speed)
-        self.uptech.CDS_SetAngle(8, 750, self.servo_speed)
+        if open_bus:
+            self.uptech.CDS_Open()
+        self._configure_modes()
+        self.stop(force=True)
 
-    # 前上台动作
-    def go_up_ahead_platform(self):
-        self.move_cmd(0, 0)
-        time.sleep(0.1)
-        # 前后支撑爪抬起
-        self.default_platform()
-        time.sleep(0.2)
-        #前进0.7s，这时前方已经顶住擂台边缘
-        self.move_cmd(550, 550)
-        time.sleep(1)
-        # 支前爪,把前半身撑起来
-        self.pack_up_ahead()
-        time.sleep(0.9)
-        # 收起前爪
-        self.default_platform()
-        time.sleep(0.2)
-        # 支后爪，把后半身撑起来
-        self.pack_up_behind()
-        time.sleep(0.7)
-        # 恢复成默认上台动作
-        self.default_platform()
-        time.sleep(0.2)
-        self.move_cmd(0, 0)
-        time.sleep(0.5)
+    def _configure_modes(self) -> None:
+        self.uptech.CDS_SetMode(self.config.left_motor_id, self.config.motor_mode)
+        self.uptech.CDS_SetMode(self.config.right_motor_id, self.config.motor_mode)
+        self.uptech.CDS_SetMode(
+            self.config.left_shovel_servo_id, self.config.servo_mode
+        )
+        self.uptech.CDS_SetMode(
+            self.config.right_shovel_servo_id, self.config.servo_mode
+        )
 
-    # 后上台动作
-    def go_up_behind_platform(self):
-        self.move_cmd(0, 0)
-        time.sleep(0.1)
-        # 前后支撑爪抬起
-        self.default_platform()
-        time.sleep(0.2)
-        # 后退0.7s，这时后方已经顶住擂台边缘
-        self.move_cmd(-550, -550)
-        time.sleep(1)
-        # 支后爪，把后半身撑起来
-        self.pack_up_behind()
-        time.sleep(0.9)
-        # 收起前爪
-        self.default_platform()
-        # 支前爪，把前半身撑起来
-        time.sleep(0.2)
-        self.pack_up_ahead()
-        time.sleep(0.7)
-        # 默认上台
-        self.default_platform()
-        time.sleep(0.2)
-        self.move_cmd(0, 0)
-        time.sleep(0.5)
+    def _clamp_speed(self, value: int) -> int:
+        limit = self.config.motor_limit
+        return max(-limit, min(limit, int(round(value))))
 
-    #搁浅动作
-    def slip_left(self):
-        self.move_cmd(-650,650)
-        self.uptech.CDS_SetAngle(7, 194, 800)
-        self.uptech.CDS_SetAngle(8, 830, 800)
-        time.sleep(0.01)
-        self.uptech.CDS_SetAngle(7, 194, 800)
-        self.uptech.CDS_SetAngle(8, 830, 800)
-        time.sleep(1.5)
-        self.default_platform()
-        self.move_cmd(-550, -550)
-        time.sleep(1)
+    def move_cmd(
+        self, left_speed: int = 0, right_speed: int = 0, force: bool = False
+    ) -> None:
+        if self._closed:
+            return
+        left = self._clamp_speed(left_speed)
+        right = self._clamp_speed(right_speed)
+        if not force and self._last_drive == (left, right):
+            return
 
-    def slip_right(self):
-        self.move_cmd(650,-650)
-        self.uptech.CDS_SetAngle(7, 194, 800)
-        self.uptech.CDS_SetAngle(8, 830, 800)
-        time.sleep(0.01)
-        self.uptech.CDS_SetAngle(7, 194, 800)
-        self.uptech.CDS_SetAngle(8, 830, 800)
-        time.sleep(1.5)
-        self.default_platform()
-        self.move_cmd(-550, -550)
-        time.sleep(1)
-    
-    def slip_front(self):
-        # 支后爪，把后半身撑起来
-        self.move_cmd(550, 550)
-        self.pack_up_behind()
-        time.sleep(0.7)
-        # 恢复成默认上台动作
-        self.default_platform()
-        time.sleep(0.2)
-        self.move_cmd(0, 0)
-        time.sleep(0.5)
-    
-    def slip_back(self):
-        # 支前爪，把前半身撑起来
-        self.move_cmd(-550, -550)
-        time.sleep(0.2)
-        self.pack_up_ahead()
-        time.sleep(0.7)
-        # 默认上台
-        self.default_platform()
-        time.sleep(0.2)
-        self.move_cmd(0, 0)
-        time.sleep(0.5)
+        self.uptech.CDS_SetSpeed(self.config.left_motor_id, left)
+        self.uptech.CDS_SetSpeed(self.config.right_motor_id, -right)
+        self._last_drive = (left, right)
 
-    # 我跳舞
-    def dance_routine(self, loops=3):
-        
-        dance_speed = 300 
-        
-        # 定义基准角度
-        base_5, base_8 = 424, 424
-        base_6, base_7 = 600, 600
-        
-        # 定义微调幅度
-        offset = 80 
+    def apply(self, command: DriveCommand, force: bool = False) -> None:
+        self.move_cmd(command.left_speed, command.right_speed, force=force)
 
-        for _ in range(loops):
-            # ---------------- 姿态 A：左前右后抬起，右前左后落下 ----------------
-            self.uptech.CDS_SetAngle(5, base_5 + offset, dance_speed) # 5号臂微抬
-            self.uptech.CDS_SetAngle(6, base_6 + offset, dance_speed) # 6号臂微落
-            self.uptech.CDS_SetAngle(7, base_7 - offset, dance_speed) # 7号臂微抬
-            self.uptech.CDS_SetAngle(8, base_8 - offset, dance_speed) # 8号臂微落
-            time.sleep(0.6)
+    def stop(self, force: bool = False) -> None:
+        self.move_cmd(0, 0, force=force)
 
-            # ---------------- 姿态 B：左前右后落下，右前左后抬起 ----------------
-            self.uptech.CDS_SetAngle(5, base_5 - offset, dance_speed) # 5号臂微落
-            self.uptech.CDS_SetAngle(6, base_6 - offset, dance_speed) # 6号臂微抬
-            self.uptech.CDS_SetAngle(7, base_7 + offset, dance_speed) # 7号臂微落
-            self.uptech.CDS_SetAngle(8, base_8 + offset, dance_speed) # 8号臂微抬
-            time.sleep(0.6)
+    def set_shovel(self, left_angle: int, right_angle: int) -> bool:
+        if self._closed or not self.config.shovel_motion_enabled:
+            return False
+        speed = self.config.servo_speed
+        self.uptech.CDS_SetAngle(
+            self.config.left_shovel_servo_id, int(left_angle), speed
+        )
+        self.uptech.CDS_SetAngle(
+            self.config.right_shovel_servo_id, int(right_angle), speed
+        )
+        return True
 
-        # 恢复到默认收起姿态
-        self.default_platform()
-        time.sleep(0.5)
+    def raise_shovel(self) -> bool:
+        moved = self.set_shovel(
+            self.config.shovel_raised_left, self.config.shovel_raised_right
+        )
+        self._shovel_pose = "raised" if moved else "disabled"
+        return moved
+
+    def lower_shovel(self) -> bool:
+        moved = self.set_shovel(
+            self.config.shovel_lowered_left, self.config.shovel_lowered_right
+        )
+        self._shovel_pose = "lowered" if moved else "disabled"
+        return moved
+
+    @property
+    def last_drive(self) -> tuple[int, int]:
+        return self._last_drive or (0, 0)
+
+    @property
+    def shovel_pose(self) -> str:
+        return self._shovel_pose
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self.stop(force=True)
+        try:
+            self.uptech.CDS_Close()
+        finally:
+            self._closed = True
+
+
+__all__ = ["DriveCommand", "MotionController"]
