@@ -15,7 +15,6 @@ class HardwareConfig:
     right_motor_id: int = 1
     left_shovel_servo_id: int = 5
     right_shovel_servo_id: int = 6
-    motor_mode: int = 1
     servo_mode: int = 0
     motor_limit: int = 1000
     servo_speed: int = 500

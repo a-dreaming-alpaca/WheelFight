@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+from project_paths import add_project_root_to_path
 from robot_config import DEFAULT_CONFIG, HardwareConfig
 
 
@@ -30,6 +31,8 @@ class MotionController:
         open_bus: bool = True,
     ) -> None:
         if uptech is None:
+            add_project_root_to_path()
+
             # Import lazily so perception/state-machine tests do not require
             # libuptech.so on the development computer.
             from uptech import UpTech
@@ -44,12 +47,13 @@ class MotionController:
 
         if open_bus:
             self.uptech.CDS_Open()
-        self._configure_modes()
+        self._configure_servo_modes()
         self.stop(force=True)
 
-    def _configure_modes(self) -> None:
-        self.uptech.CDS_SetMode(self.config.left_motor_id, self.config.motor_mode)
-        self.uptech.CDS_SetMode(self.config.right_motor_id, self.config.motor_mode)
+    def _configure_servo_modes(self) -> None:
+        # The CDS motor channels are driven directly with CDS_SetSpeed. The
+        # controller only requires an explicit mode command for positional
+        # servos, matching the original robot hardware interface.
         self.uptech.CDS_SetMode(
             self.config.left_shovel_servo_id, self.config.servo_mode
         )

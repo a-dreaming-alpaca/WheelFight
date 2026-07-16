@@ -21,7 +21,7 @@ RK3588S（感知层 → 可抢占状态机 → 电机/舵机）
 - `perception.py`：滤波、迟滞、台面状态、边缘语义和 12 方向目标聚类。
 - `energy_vision.py`：可替换的视觉接口；当前使用 AprilTag，ID 2 表示有害能量块。
 - `motion_controller.py`：唯一的电机/舵机写入边界；左侧 ID 2，右侧 ID 1，
-  铲子左 ID 5、右 ID 6。
+  铲子左 ID 5、右 ID 6。电机直接使用 `CDS_SetSpeed`，只有两个舵机需要设置模式0。
 - `tk_monitor.py`：只读网页监控，不打开串口或 UpTech ADC。
 - `sensor_monitor.py`：独立传感器接线/采样测试工具，不参与比赛控制。
 - `BEHAVIOR_DESIGN.md`：完整行为、优先级和标定依据。
@@ -46,8 +46,9 @@ python3 -c "import cv2, apriltag; print('vision ok')"
 如果视觉依赖或摄像头暂时不可用，控制器会进入保守降级模式：继续安全移动搜索，
 但不会把一次未识别到 Tag 当成敌人，也不会推动无法确认的能量块。
 
-比赛入口和动作调参入口会根据自身文件位置自动加入仓库根目录，以便加载根目录下的
-`uptech.py`。RK3588S 系统仍须能够从动态库搜索路径加载厂商提供的 `libuptech.so`。
+`MotionController` 创建真实硬件对象时会根据源码位置自动加入仓库根目录，以便加载
+根目录下的 `uptech.py`；注入测试替身时不会改变模块搜索路径。RK3588S 系统仍须能够
+从动态库搜索路径加载厂商提供的 `libuptech.so`。
 
 启动比赛控制器：
 

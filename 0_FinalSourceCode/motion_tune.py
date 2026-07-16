@@ -2,11 +2,6 @@
 
 from __future__ import annotations
 
-from project_paths import add_project_root_to_path
-
-
-add_project_root_to_path()
-
 from motion_controller import MotionController
 from robot_config import DEFAULT_CONFIG
 
