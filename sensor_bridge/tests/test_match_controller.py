@@ -138,7 +138,8 @@ class ControllerHarness:
         vision=None,
         received_age=0.0,
     ):
-        analog = [100] * 14
+        # The first ranging calibration measured an unobstructed IR value near 0.
+        analog = [0] * 14
         analog[12], analog[13] = gray
         if ir:
             for index, value in ir.items():
@@ -301,8 +302,8 @@ class MatchControllerTests(unittest.TestCase):
         h.controller.state_entered = h.clock()
         h.controller.match_started = True
         h.controller.match_start_time = h.clock()
-        h.step(ir={0: 580}, gray=(700, 700), vision=EnergyClass.NO_BLOCK_MARKER)
-        h.step(ir={0: 580}, gray=(700, 700), vision=EnergyClass.NO_BLOCK_MARKER)
+        h.step(ir={0: 300}, gray=(700, 700), vision=EnergyClass.NO_BLOCK_MARKER)
+        h.step(ir={0: 300}, gray=(700, 700), vision=EnergyClass.NO_BLOCK_MARKER)
         self.assertEqual(h.controller.state, RobotState.TARGET_CLASSIFY)
 
 

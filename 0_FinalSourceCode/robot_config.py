@@ -32,16 +32,18 @@ class HardwareConfig:
 class SensorConfig:
     analog_filter_window: int = 3
 
-    # Temporary 10-bit Mega ADC thresholds. The initial assumption is that a
-    # larger infrared reading means a nearer/stronger return.
+    # Temporary 10-bit Mega ADC thresholds based on the first ranging test:
+    # about 0 with no target, about 200 at 50 cm, and 500-600 near 10 cm.
+    # The response falls again inside roughly 10 cm, so these values still
+    # require final on-robot calibration with every sensor installed.
     ir_near_is_high: bool = True
-    ir_detect_enter: int = 550
-    ir_detect_exit: int = 500
+    ir_detect_enter: int = 200
+    ir_detect_exit: int = 150
     # A missing camera marker is enemy evidence only when the centered ranging
     # target is at least this close. This is provisional and must be measured.
-    no_marker_enemy_ir_threshold: int = 650
-    start_hand_enter: int = 700
-    start_hand_exit: int = 600
+    no_marker_enemy_ir_threshold: int = 350
+    start_hand_enter: int = 250
+    start_hand_exit: int = 100
 
     # Grayscale is confirmed by the team to be larger on the platform.
     gray_on_enter: int = 550
@@ -101,7 +103,7 @@ class TimingConfig:
 
     target_align_timeout: float = 3.0
     target_classify_timeout: float = 0.80
-    target_lost_grace: float = 0.16
+    target_lost_grace: float = 0.25
     attack_timeout: float = 2.50
     push_timeout: float = 3.00
     avoid_turn_time: float = 0.55
