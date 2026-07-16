@@ -10,6 +10,11 @@ from collections import Counter
 from enum import Enum
 from typing import Optional
 
+from project_paths import add_project_root_to_path
+
+
+add_project_root_to_path()
+
 from energy_vision import AprilTagEnergyDetector, EnergyClass, VisionResult
 from mega_sensor_reader import MegaSensorReader
 from motion_controller import DriveCommand, MotionController

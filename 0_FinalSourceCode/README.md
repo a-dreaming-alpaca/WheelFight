@@ -46,6 +46,9 @@ python3 -c "import cv2, apriltag; print('vision ok')"
 如果视觉依赖或摄像头暂时不可用，控制器会进入保守降级模式：继续安全移动搜索，
 但不会把一次未识别到 Tag 当成敌人，也不会推动无法确认的能量块。
 
+比赛入口和动作调参入口会根据自身文件位置自动加入仓库根目录，以便加载根目录下的
+`uptech.py`。RK3588S 系统仍须能够从动态库搜索路径加载厂商提供的 `libuptech.so`。
+
 启动比赛控制器：
 
 ```bash
@@ -85,15 +88,15 @@ python3 tk_monitor.py
    “无 Tag 可判为敌人”的红外近距门槛也必须实测。
 4. 依次验证边缘停车、部分掉台恢复、平台/围栏判别、低速冲台，最后才能提高速度。
 
-安全调参工具默认只打印计划，不会动作。例如：
+调参时只修改 `robot_config.py` 中的数值，并在 `motion_tune.py` 的
+`run_selected_action()` 中保留当前要测试的一条 `MotionController` 调用。例如：
 
 ```bash
-python3 motion_tune.py drive --left 150 --right 150 --seconds 0.3
-python3 motion_tune.py --run drive --left 150 --right 150 --seconds 0.3
-python3 motion_tune.py --run shovel --left-angle 512 --right-angle 512
+python3 motion_tune.py
 ```
 
-带 `--run` 后仍需现场输入 `RUN` 才会输出动作。
+动作运行后按回车停止；`Ctrl+C` 或普通Python异常也会通过 `finally` 尝试停车并关闭
+CDS总线。运行该工具时不要同时启动比赛控制器。
 
 ## 离线测试
 
