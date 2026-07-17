@@ -93,6 +93,8 @@ def test_config():
         shovel_settle_time=0.01,
         ground_candidate_confirm=0.01,
         platform_verify_time=0.01,
+        climb_prepare_forward_time=0.04,
+        climb_prepare_settle_time=0.06,
         target_classify_timeout=0.20,
         fault_recover_time=0.01,
         match_duration=0.10,
@@ -191,7 +193,7 @@ class MatchControllerTests(unittest.TestCase):
         platform.controller.state_entered = platform.clock()
         platform.step(ir={6: 800}, digital=(0, 0, 1))
         platform.step(ir={6: 800}, digital=(0, 0, 1))
-        self.assertEqual(platform.controller.state, RobotState.CLIMB_BACKWARD)
+        self.assertEqual(platform.controller.state, RobotState.CLIMB_PREPARE)
 
         fence = ControllerHarness()
         fence.controller.state = RobotState.VERIFY_PLATFORM
@@ -199,6 +201,111 @@ class MatchControllerTests(unittest.TestCase):
         command = fence.step(ir={6: 800}, digital=(0, 0, 0))
         self.assertEqual(fence.controller.state, RobotState.FENCE_ESCAPE)
         self.assertEqual(command.label, "fence-confirmed-stop")
+
+    def test_rear_alignment_holds_still_before_platform_verification(self):
+        h = ControllerHarness()
+        h.controller.state = RobotState.ALIGN_REAR
+        h.controller.state_entered = h.clock()
+
+        command = h.step(ir={6: 300})
+        self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+        self.assertEqual(command.label, "rear-align-hold")
+        self.assertEqual(h.controller.state, RobotState.ALIGN_REAR)
+
+        command = h.step(ir={6: 300})
+        self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+        self.assertEqual(h.controller.state, RobotState.VERIFY_PLATFORM)
+
+        turning = ControllerHarness()
+        turning.controller.state = RobotState.ALIGN_REAR
+        turning.controller.state_entered = turning.clock()
+        command = turning.step(ir={5: 300})
+        self.assertNotEqual(command.left_speed, 0)
+        self.assertEqual(command.left_speed, -command.right_speed)
+
+    def test_climb_prepare_creates_runup_then_settles_before_reversing(self):
+        h = ControllerHarness()
+        h.controller.state = RobotState.CLIMB_PREPARE
+        h.controller.state_entered = h.clock()
+        h.controller._climb_seen_rear_on = True
+
+        command = h.step(ir={6: 800})
+        prepare_speed = h.controller.config.motion.climb_prepare_speed
+        self.assertEqual(
+            (command.left_speed, command.right_speed),
+            (prepare_speed, prepare_speed),
+        )
+        self.assertEqual(h.controller.state, RobotState.CLIMB_PREPARE)
+
+        entered = h.controller.state_entered
+        h.clock.value = (
+            entered + h.controller.config.timing.climb_prepare_forward_time
+            + 1e-6
+        )
+        command = h.step(ir={6: 800})
+        self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+        self.assertEqual(h.controller.state, RobotState.CLIMB_PREPARE)
+
+        h.clock.value = (
+            entered
+            + h.controller.config.timing.climb_prepare_forward_time
+            + h.controller.config.timing.climb_prepare_settle_time
+            + 1e-6
+        )
+        command = h.step(ir={6: 800})
+        self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+        self.assertEqual(h.controller.state, RobotState.CLIMB_BACKWARD)
+        self.assertFalse(h.controller._climb_seen_rear_on)
+
+        command = h.step(ir={6: 800})
+        climb_speed = h.controller.config.motion.climb_speed
+        self.assertEqual(
+            (command.left_speed, command.right_speed),
+            (-climb_speed, -climb_speed),
+        )
+
+    def test_climb_prepare_continues_when_rear_ir_disappears(self):
+        h = ControllerHarness()
+        h.controller.state = RobotState.CLIMB_PREPARE
+        h.controller.state_entered = h.clock()
+
+        command = h.step()
+
+        self.assertEqual(h.controller.state, RobotState.CLIMB_PREPARE)
+        self.assertGreater(command.left_speed, 0)
+        self.assertEqual(command.left_speed, command.right_speed)
+
+    def test_rear_high_object_preempts_climb_prepare_as_fence(self):
+        h = ControllerHarness()
+        h.controller.state = RobotState.CLIMB_PREPARE
+        h.controller.state_entered = h.clock()
+
+        command = h.step(ir={6: 800}, digital=(0, 0, 0))
+
+        self.assertEqual(h.controller.state, RobotState.FENCE_ESCAPE)
+        self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+        self.assertEqual(command.label, "climb-fence-stop")
+
+    def test_climb_prepare_skips_runup_when_already_on_platform(self):
+        h = ControllerHarness()
+        h.controller.state = RobotState.CLIMB_PREPARE
+        h.controller.state_entered = h.clock()
+
+        command = h.step(gray=(700, 700))
+
+        self.assertEqual(h.controller.state, RobotState.CLIMB_CLEAR_EDGE)
+        self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+
+    def test_climb_prepare_prefers_on_platform_over_rear_high_object(self):
+        h = ControllerHarness()
+        h.controller.state = RobotState.CLIMB_PREPARE
+        h.controller.state_entered = h.clock()
+
+        command = h.step(gray=(700, 700), digital=(0, 0, 0))
+
+        self.assertEqual(h.controller.state, RobotState.CLIMB_CLEAR_EDGE)
+        self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+        self.assertEqual(command.label, "climb-prepare-already-on-stop")
 
     def test_climb_requires_rear_then_both_grayscale_on_platform(self):
         h = ControllerHarness()

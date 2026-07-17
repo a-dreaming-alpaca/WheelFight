@@ -139,10 +139,13 @@ flowchart TD
     DEPLOY --> GROUND["OFF_PLATFORM"]
     GROUND --> ALIGN["ALIGN_REAR"]
     ALIGN --> VERIFY["VERIFY_PLATFORM"]
-    VERIFY -->|"low obstacle"| CLIMB["CLIMB_BACKWARD"]
+    VERIFY -->|"low obstacle"| PREPARE["CLIMB_PREPARE"]
     VERIFY -->|"high obstacle"| FENCE["FENCE_ESCAPE"]
+    PREPARE -->|"run-up ready"| CLIMB["CLIMB_BACKWARD"]
+    PREPARE -->|"high rear object"| FENCE
+    PREPARE -->|"already on platform"| CLEAR["CLIMB_CLEAR_EDGE"]
     FENCE --> GROUND
-    CLIMB --> CLEAR["CLIMB_CLEAR_EDGE"]
+    CLIMB --> CLEAR
     CLEAR --> ARENA["ON_PLATFORM"]
     ARENA --> SEARCH["ARENA_SEARCH"]
     SEARCH --> TARGET["TARGET_ALIGN_AND_CLASSIFY"]
@@ -257,7 +260,31 @@ rear ranging present and DI2 == 0  -> high object/fence, reject
 rear ranging present and DI2 == 1  -> low object/platform candidate
 ```
 
-Only the third combination may enter `CLIMB_BACKWARD`.
+Only the third combination may enter `CLIMB_PREPARE`.
+
+### `CLIMB_PREPARE`
+
+Purpose: create enough forward separation for the later backward acceleration
+run without losing the verified platform candidate.
+
+Actions:
+
+- drive forward at `climb_prepare_speed` for
+  `climb_prepare_forward_time`, moving away from the platform to create the
+  run-up distance;
+- do not treat the expected weakening or disappearance of the rear ranging
+  cluster during this forward motion as a lost candidate;
+- stop for `climb_prepare_settle_time` before reversing, reducing mechanical
+  and current shock when the motor direction changes;
+- continuously monitor DI2 and abort to `FENCE_ESCAPE` if a high rear object
+  is confirmed;
+- if both grayscale sensors already report on-platform, stop preparation and
+  enter `CLIMB_CLEAR_EDGE` instead of driving forward off the platform;
+- reset the recorded climb grayscale sequence immediately before entering
+  `CLIMB_BACKWARD`.
+
+All preparation phases are non-blocking, so communication faults and the rear
+high-object protection remain able to preempt the motion every control cycle.
 
 ### `FENCE_ESCAPE`
 
@@ -492,6 +519,10 @@ Keep these in a configuration file:
 - DI0/DI1 edge assertion/clear timing;
 - DI2 fence confirmation timing and valid rear ranging window;
 - search, alignment, probe, climb, patrol, attack, push, and recovery speeds;
+- `climb_prepare_speed`: forward speed used to create backward run-up room;
+- `climb_prepare_forward_time`: duration of that forward separation motion;
+- `climb_prepare_settle_time`: zero-speed dwell before changing to high-speed
+  reverse;
 - climb timeout and expected front/rear grayscale transition timing;
 - post-climb clearance duration;
 - servo raised/lowered angles, speed, and settling time;
@@ -509,7 +540,8 @@ previous gate passes:
 4. Front/rear grayscale transition recovery at low speed.
 5. Ground candidate scan and rear alignment.
 6. Platform-versus-fence verification using rear ranging plus DI2.
-7. Low-speed climb, then full-speed climb and interior clearance.
+7. Low-speed platform probe, forward run-up preparation, then full-speed climb
+   and interior clearance.
 8. On-platform moving search and target alignment.
 9. Camera adapter with temporary AprilTags and recorded-video replay.
 10. Harmful/unknown avoidance.

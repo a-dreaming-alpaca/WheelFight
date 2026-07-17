@@ -63,6 +63,7 @@ class MotionConfig:
     fence_escape_forward_speed: int = 280
     fence_escape_turn_speed: int = 240
     platform_probe_speed: int = 180
+    climb_prepare_speed: int = 300
     climb_speed: int = 800
     climb_clear_speed: int = 350
     arena_search_turn_speed: int = 220
@@ -95,6 +96,8 @@ class TimingConfig:
     align_timeout: float = 4.0
     platform_verify_time: float = 0.12
     platform_probe_timeout: float = 0.60
+    climb_prepare_forward_time: float = 0.30
+    climb_prepare_settle_time: float = 0.08
     fence_escape_forward_time: float = 0.40
     fence_escape_turn_time: float = 0.55
     climb_timeout: float = 2.20

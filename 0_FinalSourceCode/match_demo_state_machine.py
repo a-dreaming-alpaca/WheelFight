@@ -33,6 +33,7 @@ class RobotState(str, Enum):
     GROUND_SEARCH = "GROUND_SEARCH"
     ALIGN_REAR = "ALIGN_REAR"
     VERIFY_PLATFORM = "VERIFY_PLATFORM"
+    CLIMB_PREPARE = "CLIMB_PREPARE"
     FENCE_ESCAPE = "FENCE_ESCAPE"
     CLIMB_BACKWARD = "CLIMB_BACKWARD"
     CLIMB_CLEAR_EDGE = "CLIMB_CLEAR_EDGE"
@@ -54,6 +55,7 @@ GROUND_STATES = {
     RobotState.GROUND_SEARCH,
     RobotState.ALIGN_REAR,
     RobotState.VERIFY_PLATFORM,
+    RobotState.CLIMB_PREPARE,
     RobotState.FENCE_ESCAPE,
     RobotState.CLIMB_BACKWARD,
     RobotState.CLIMB_CLEAR_EDGE,
@@ -253,7 +255,22 @@ class MatchController:
         if self.state in PREMATCH_STATES:
             return None
 
-        if self.state == RobotState.CLIMB_BACKWARD and p.rear_high_object:
+        if (
+            self.state == RobotState.CLIMB_PREPARE
+            and p.front_on_platform
+            and p.rear_on_platform
+        ):
+            self._transition(
+                RobotState.CLIMB_CLEAR_EDGE,
+                "already on platform during climb preparation",
+                now,
+            )
+            return DriveCommand(label="climb-prepare-already-on-stop")
+
+        if self.state in (
+            RobotState.CLIMB_PREPARE,
+            RobotState.CLIMB_BACKWARD,
+        ) and p.rear_high_object:
             self._transition(
                 RobotState.FENCE_ESCAPE, "high rear object during climb", now
             )
@@ -314,6 +331,7 @@ class MatchController:
             RobotState.GROUND_SEARCH: self._step_ground_search,
             RobotState.ALIGN_REAR: self._step_align_rear,
             RobotState.VERIFY_PLATFORM: self._step_verify_platform,
+            RobotState.CLIMB_PREPARE: self._step_climb_prepare,
             RobotState.FENCE_ESCAPE: self._step_fence_escape,
             RobotState.CLIMB_BACKWARD: self._step_climb_backward,
             RobotState.CLIMB_CLEAR_EDGE: self._step_climb_clear_edge,
@@ -435,6 +453,8 @@ class MatchController:
                 RobotState.VERIFY_PLATFORM, "rear candidate aligned", now
             )
             return DriveCommand(label="rear-aligned-stop")
+        if aligned and rear_active:
+            return DriveCommand(label="rear-align-hold")
         if self._state_elapsed(now) > self.config.timing.align_timeout:
             self._transition(RobotState.GROUND_SEARCH, "rear alignment timeout", now)
             return DriveCommand(label="rear-align-timeout-stop")
@@ -452,9 +472,8 @@ class MatchController:
             self.config.timing.platform_verify_time,
             now,
         ):
-            self._climb_seen_rear_on = p.rear_on_platform
             self._transition(
-                RobotState.CLIMB_BACKWARD, "low rear obstacle verified", now
+                RobotState.CLIMB_PREPARE, "low rear obstacle verified", now
             )
             return DriveCommand(label="platform-verified-stop")
         if self._state_elapsed(now) > self.config.timing.platform_probe_timeout:
@@ -462,6 +481,33 @@ class MatchController:
             return DriveCommand(label="platform-probe-timeout")
         speed = self.config.motion.platform_probe_speed
         return DriveCommand(-speed, -speed, "platform-probe-reverse")
+
+    def _step_climb_prepare(self, p, vision, now) -> DriveCommand:
+        if p.front_on_platform and p.rear_on_platform:
+            self._transition(
+                RobotState.CLIMB_CLEAR_EDGE,
+                "already on platform during climb preparation",
+                now,
+            )
+            return DriveCommand(label="climb-prepare-already-on-stop")
+
+        elapsed = self._state_elapsed(now)
+        timing = self.config.timing
+        if elapsed < timing.climb_prepare_forward_time:
+            speed = self.config.motion.climb_prepare_speed
+            return DriveCommand(speed, speed, "climb-prepare-forward")
+        if elapsed < (
+            timing.climb_prepare_forward_time
+            + timing.climb_prepare_settle_time
+        ):
+            return DriveCommand(label="climb-prepare-settle")
+
+        self._transition(
+            RobotState.CLIMB_BACKWARD,
+            "climb run-up distance prepared",
+            now,
+        )
+        return DriveCommand(label="climb-prepare-complete-stop")
 
     def _step_fence_escape(self, p, vision, now) -> DriveCommand:
         elapsed = self._state_elapsed(now)
@@ -774,6 +820,8 @@ class MatchController:
             self._target_last_seen = now
         if state == RobotState.PUSH_GAIN_BLOCK:
             self._target_last_seen = now
+        if state == RobotState.CLIMB_BACKWARD:
+            self._climb_seen_rear_on = False
         if state == RobotState.FAULT_STOP:
             self._fault_started = now
         self._publish_status(force=True)
@@ -839,6 +887,7 @@ class MatchController:
         watched_states = {
             RobotState.ALIGN_REAR,
             RobotState.VERIFY_PLATFORM,
+            RobotState.CLIMB_PREPARE,
             RobotState.CLIMB_BACKWARD,
             RobotState.ATTACK_ENEMY,
             RobotState.PUSH_GAIN_BLOCK,
