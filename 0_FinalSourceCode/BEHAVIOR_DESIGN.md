@@ -332,12 +332,19 @@ Then stop, clear ground-search history, and enter `ON_PLATFORM.ARENA_SEARCH`.
 
 ### `ARENA_SEARCH`
 
-The robot uses a moving scan rather than remaining stationary:
+When no target cluster is present, the robot actively patrols straight ahead
+at a calibrated low speed rather than remaining stationary:
 
-- rotate or use a slow curved patrol;
-- form and track A0-A11 object clusters;
-- avoid long blind forward runs;
-- immediately preempt on edge or platform-transition evidence.
+- command equal positive left/right speeds while continuously forming and
+  tracking A0-A11 object clusters;
+- stop in the same control iteration when a target cluster appears, then enter
+  `TARGET_ALIGN` to face and classify it;
+- immediately preempt on edge or platform-transition evidence;
+- let `EDGE_RECOVER` withdraw from the edge and change the chassis heading
+  before returning to straight-ahead patrol.
+
+`ARENA_SEARCH` itself does not change the patrol heading. Its forward speed
+must remain low enough for the edge supervisor and chassis braking distance.
 
 Candidate selection considers:
 
@@ -427,9 +434,12 @@ after several safe samples.
 
 | Edge input | Initial response |
 | --- | --- |
-| DI0=1, DI1=0 | Stop, short reverse along the known arrival path, then rotate away from the left/front edge |
-| DI0=0, DI1=1 | Stop, short reverse along the known arrival path, then rotate away from the right/front edge |
-| DI0=1, DI1=1 | Stop, reverse straight along the known arrival path, then make a larger in-place turn |
+| DI0=1, DI1=0 | Stop, short reverse along the known arrival path, then turn right away from the left/front edge |
+| DI0=0, DI1=1 | Stop, short reverse along the known arrival path, then turn left away from the right/front edge |
+| DI0=1, DI1=1 | Stop, reverse straight along the known arrival path, then turn right |
+
+The double-edge response always turns right; it does not alternate direction
+between recoveries.
 
 Reverse recovery is short because there is no dedicated rear downward digital
 edge sensor. A13 must be monitored continuously; if the rear begins leaving the

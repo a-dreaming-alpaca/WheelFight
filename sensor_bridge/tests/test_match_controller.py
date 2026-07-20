@@ -331,6 +331,30 @@ class MatchControllerTests(unittest.TestCase):
         self.assertGreater(command.left_speed, 0)
         self.assertGreater(command.right_speed, 0)
 
+    def test_arena_search_patrols_straight_forward_without_target(self):
+        h = ControllerHarness()
+        h.controller.state = RobotState.ARENA_SEARCH
+        h.controller.state_entered = h.clock()
+
+        command = h.step(gray=(700, 700))
+
+        patrol_speed = h.controller.config.motion.arena_patrol_speed
+        self.assertGreater(command.left_speed, 0)
+        self.assertEqual(
+            (command.left_speed, command.right_speed),
+            (patrol_speed, patrol_speed),
+        )
+
+    def test_arena_search_stops_and_aligns_when_target_appears(self):
+        h = ControllerHarness()
+        h.controller.state = RobotState.ARENA_SEARCH
+        h.controller.state_entered = h.clock()
+
+        command = h.step(ir={2: 300}, gray=(700, 700))
+
+        self.assertEqual(h.controller.state, RobotState.TARGET_ALIGN)
+        self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+
     def test_stale_sensor_stops_motion_and_enters_fault(self):
         h = ControllerHarness()
         h.controller.state = RobotState.ATTACK_ENEMY
@@ -362,6 +386,78 @@ class MatchControllerTests(unittest.TestCase):
         self.assertEqual(h.controller.state, RobotState.EDGE_RECOVER)
         self.assertEqual(command.left_speed, 0)
         self.assertEqual(command.right_speed, 0)
+
+    def test_double_edge_recovery_always_turns_right_without_alternating(self):
+        h = ControllerHarness()
+        h.controller._alternate_turn_sign = -1
+        initial_alternate_sign = h.controller._alternate_turn_sign
+        timing = h.controller.config.timing
+
+        def enter_double_edge_recovery():
+            h.controller.state = RobotState.ARENA_SEARCH
+            h.controller.state_entered = h.clock()
+            command = h.step(gray=(700, 700), digital=(1, 1, 1))
+            self.assertEqual(h.controller.state, RobotState.EDGE_RECOVER)
+            self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+            return h.controller.state_entered
+
+        first_entered = enter_double_edge_recovery()
+        h.clock.value = (
+            first_entered
+            + timing.edge_stop_time
+            + timing.edge_reverse_time
+            + 1e-6
+        )
+        first_turn = h.step(gray=(700, 700), digital=(0, 0, 1))
+        self.assertGreater(first_turn.left_speed, 0)
+        self.assertLess(first_turn.right_speed, 0)
+
+        h.clock.value = (
+            first_entered
+            + timing.edge_stop_time
+            + timing.edge_reverse_time
+            + timing.edge_turn_time
+            + 1e-6
+        )
+        h.step(gray=(700, 700), digital=(0, 0, 1))
+        self.assertEqual(h.controller.state, RobotState.ARENA_SEARCH)
+        self.assertEqual(h.controller._alternate_turn_sign, initial_alternate_sign)
+
+        repeated_entered = enter_double_edge_recovery()
+        h.clock.value = (
+            repeated_entered
+            + timing.edge_stop_time
+            + timing.edge_reverse_time
+            + 1e-6
+        )
+        repeated_turn = h.step(gray=(700, 700), digital=(0, 0, 1))
+        self.assertGreater(repeated_turn.left_speed, 0)
+        self.assertLess(repeated_turn.right_speed, 0)
+        self.assertEqual(h.controller._alternate_turn_sign, initial_alternate_sign)
+
+    def test_single_edge_recovery_turn_directions_are_unchanged(self):
+        def turn_command_for(digital):
+            h = ControllerHarness()
+            h.controller.state = RobotState.ARENA_SEARCH
+            h.controller.state_entered = h.clock()
+            h.step(gray=(700, 700), digital=digital)
+            entered = h.controller.state_entered
+            timing = h.controller.config.timing
+            h.clock.value = (
+                entered
+                + timing.edge_stop_time
+                + timing.edge_reverse_time
+                + 1e-6
+            )
+            return h.step(gray=(700, 700), digital=(0, 0, 1))
+
+        left_edge_turn = turn_command_for((1, 0, 1))
+        self.assertGreater(left_edge_turn.left_speed, 0)
+        self.assertLess(left_edge_turn.right_speed, 0)
+
+        right_edge_turn = turn_command_for((0, 1, 1))
+        self.assertLess(right_edge_turn.left_speed, 0)
+        self.assertGreater(right_edge_turn.right_speed, 0)
 
     def test_rear_high_object_preempts_climb_as_fence(self):
         h = ControllerHarness()

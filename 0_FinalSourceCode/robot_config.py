@@ -66,7 +66,7 @@ class MotionConfig:
     climb_prepare_speed: int = 300
     climb_speed: int = 800
     climb_clear_speed: int = 350
-    arena_search_turn_speed: int = 220
+    arena_patrol_speed: int = 220
     attack_speed: int = 700
     attack_min_speed: int = 350
     push_gain_speed: int = 430

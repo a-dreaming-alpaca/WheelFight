@@ -578,8 +578,8 @@ class MatchController:
         if p.clusters:
             self._transition(RobotState.TARGET_ALIGN, "arena target candidate", now)
             return DriveCommand(label="arena-candidate-stop")
-        speed = self.config.motion.arena_search_turn_speed
-        return DriveCommand(speed, -speed, "arena-moving-search")
+        speed = self.config.motion.arena_patrol_speed
+        return DriveCommand(speed, speed, "arena-patrol-forward")
 
     def _step_target_align(self, p, vision, now) -> DriveCommand:
         target = p.strongest_cluster()
@@ -729,7 +729,9 @@ class MatchController:
         elif right and not left:
             turn_sign = -1
         else:
-            turn_sign = self._alternate_turn_sign
+            # With both front edge sensors active, use a deterministic
+            # clockwise/right turn. The angle remains a calibration parameter.
+            turn_sign = 1
         speed = motion.edge_turn_speed * turn_sign
         turn_complete = elapsed >= (
             timing.edge_stop_time + timing.edge_reverse_time + timing.edge_turn_time
@@ -740,7 +742,6 @@ class MatchController:
             and not p.front_right_edge
         )
         if turn_complete and clear:
-            self._alternate_turn_sign *= -1
             self._transition(RobotState.ARENA_SEARCH, "edge recovery complete", now)
             return DriveCommand(label="edge-recovery-complete-stop")
         if elapsed > timing.edge_recover_timeout:
