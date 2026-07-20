@@ -70,6 +70,8 @@ class MotionConfig:
     attack_speed: int = 700
     attack_min_speed: int = 350
     push_gain_speed: int = 430
+    avoid_turn_speed: int = 320
+    avoid_depart_speed: int = 220
     edge_reverse_speed: int = 380
     edge_turn_speed: int = 320
     partial_recover_speed: int = 320
@@ -109,7 +111,10 @@ class TimingConfig:
     target_lost_grace: float = 0.25
     attack_timeout: float = 2.50
     push_timeout: float = 3.00
-    avoid_turn_time: float = 0.55
+    # Provisional open-loop values: tune the turn for roughly 180 degrees,
+    # then tune the forward phase far enough to leave the rejected target.
+    avoid_turn_time: float = 1.00
+    avoid_depart_time: float = 0.60
 
     edge_stop_time: float = 0.06
     edge_reverse_time: float = 0.28

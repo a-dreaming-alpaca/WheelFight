@@ -125,8 +125,6 @@ class MatchController:
         self._last_vision_vote_timestamp: Optional[float] = None
         self._target_last_seen = now
         self._edge_pattern = (False, False)
-        self._avoid_turn_sign = 1
-        self._alternate_turn_sign = 1
         self._climb_seen_rear_on = False
         self._fault_started = now
         self._last_feature_signature = None
@@ -517,9 +515,8 @@ class MatchController:
             speed = motion.fence_escape_forward_speed
             return DriveCommand(speed, speed, "fence-escape-forward")
         if elapsed < timing.fence_escape_forward_time + timing.fence_escape_turn_time:
-            speed = motion.fence_escape_turn_speed * self._alternate_turn_sign
+            speed = motion.fence_escape_turn_speed
             return DriveCommand(speed, -speed, "fence-escape-turn")
-        self._alternate_turn_sign *= -1
         self._transition(RobotState.GROUND_SEARCH, "fence escape complete", now)
         return DriveCommand(label="fence-escape-complete-stop")
 
@@ -582,7 +579,7 @@ class MatchController:
         return DriveCommand(speed, speed, "arena-patrol-forward")
 
     def _step_target_align(self, p, vision, now) -> DriveCommand:
-        target = p.strongest_cluster()
+        target = p.cluster_nearest(0.0)
         if target is None:
             if self._state_elapsed(now) > self.config.timing.target_lost_grace:
                 self._transition(RobotState.ARENA_SEARCH, "target lost while aligning", now)
@@ -590,14 +587,17 @@ class MatchController:
 
         self._target_last_seen = now
         error = bearing_error(target.bearing_deg, 0.0)
+        centered = abs(error) <= self.config.sensors.front_target_tolerance_deg
         if self._held(
             "target-centered",
-            abs(error) <= self.config.sensors.front_target_tolerance_deg,
+            centered,
             0.08,
             now,
         ):
             self._transition(RobotState.TARGET_CLASSIFY, "front target centered", now)
             return DriveCommand(label="target-centered-stop")
+        if centered:
+            return DriveCommand(label="target-align-hold")
         if self._state_elapsed(now) > self.config.timing.target_align_timeout:
             self._transition(RobotState.ARENA_SEARCH, "target alignment timeout", now)
             return DriveCommand(label="target-align-timeout-stop")
@@ -627,7 +627,6 @@ class MatchController:
 
         required = self.config.vision.classify_votes
         if self._vision_votes[EnergyClass.HARMFUL] >= required:
-            self._choose_avoid_direction(target.bearing_deg)
             self._transition(RobotState.AVOID_BLOCK, "harmful tag confirmed", now)
             return DriveCommand(label="harmful-confirmed-stop")
         if self._vision_votes[EnergyClass.GAIN] >= required:
@@ -643,14 +642,12 @@ class MatchController:
             )
             return DriveCommand(label="enemy-confirmed-stop")
         if self._state_elapsed(now) > self.config.timing.target_classify_timeout:
-            self._choose_avoid_direction(target.bearing_deg)
             self._transition(RobotState.AVOID_BLOCK, "target classification uncertain", now)
             return DriveCommand(label="classification-timeout-stop")
         return DriveCommand(label="classifying-target-stop")
 
     def _step_attack_enemy(self, p, vision, now) -> DriveCommand:
         if self._fresh_class(vision, EnergyClass.HARMFUL, now):
-            self._choose_avoid_direction(0.0)
             self._transition(RobotState.AVOID_BLOCK, "harmful tag during attack", now)
             return DriveCommand(label="attack-harmful-stop")
         if self._fresh_class(vision, EnergyClass.GAIN, now):
@@ -678,11 +675,9 @@ class MatchController:
 
     def _step_push_gain(self, p, vision, now) -> DriveCommand:
         if self._fresh_class(vision, EnergyClass.HARMFUL, now):
-            self._choose_avoid_direction(0.0)
             self._transition(RobotState.AVOID_BLOCK, "harmful reclassification", now)
             return DriveCommand(label="push-harmful-stop")
         if not vision.is_fresh(now, self.config.timing.camera_stale_after):
-            self._choose_avoid_direction(0.0)
             self._transition(RobotState.AVOID_BLOCK, "camera stale while pushing", now)
             return DriveCommand(label="push-camera-stale-stop")
 
@@ -704,11 +699,17 @@ class MatchController:
         )
 
     def _step_avoid_block(self, p, vision, now) -> DriveCommand:
-        if self._state_elapsed(now) >= self.config.timing.avoid_turn_time:
-            self._transition(RobotState.ARENA_SEARCH, "block avoidance complete", now)
-            return DriveCommand(label="avoid-complete-stop")
-        speed = self.config.motion.align_turn_speed * self._avoid_turn_sign
-        return DriveCommand(speed, -speed, "avoid-block-turn")
+        elapsed = self._state_elapsed(now)
+        timing = self.config.timing
+        motion = self.config.motion
+        if elapsed < timing.avoid_turn_time:
+            speed = motion.avoid_turn_speed
+            return DriveCommand(speed, -speed, "avoid-block-turn-right")
+        if elapsed < timing.avoid_turn_time + timing.avoid_depart_time:
+            speed = motion.avoid_depart_speed
+            return DriveCommand(speed, speed, "avoid-block-depart-forward")
+        self._transition(RobotState.ARENA_SEARCH, "block avoidance departure complete", now)
+        return DriveCommand(label="avoid-departure-complete-stop")
 
     # ------------------------------------------------------------------
     # Edge, fall and fault states
@@ -850,14 +851,6 @@ class MatchController:
         adjustment = max(-limit, min(limit, adjustment))
         return DriveCommand(base_speed + adjustment, base_speed - adjustment, label)
 
-    def _choose_avoid_direction(self, target_bearing: float) -> None:
-        if abs(target_bearing) < 5.0:
-            self._avoid_turn_sign = self._alternate_turn_sign
-            self._alternate_turn_sign *= -1
-        else:
-            # Target on the right -> turn counter-clockwise/left, and vice versa.
-            self._avoid_turn_sign = -1 if target_bearing > 0 else 1
-
     def _fresh_class(
         self, vision: VisionResult, classification: EnergyClass, now: float
     ) -> bool:
@@ -900,7 +893,6 @@ class MatchController:
             if self.state in GROUND_STATES:
                 self._transition(RobotState.FENCE_ESCAPE, "stuck watchdog", now)
             else:
-                self._choose_avoid_direction(0.0)
                 self._transition(RobotState.AVOID_BLOCK, "stuck watchdog", now)
             self._feature_changed_at = now
             return DriveCommand(label="stuck-watchdog-stop")

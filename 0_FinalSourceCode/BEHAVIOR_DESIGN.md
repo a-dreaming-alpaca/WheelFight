@@ -292,11 +292,13 @@ Actions:
 
 - stop reverse motion immediately;
 - drive forward a short sensor-checked distance;
-- turn away from the rejected rear direction;
+- turn clockwise/right for a calibrated duration after clearing the rear
+  obstacle; repeated fence escapes use the same deterministic direction;
 - clear that candidate and resume scanning.
 
-The escape is non-blocking and must stop if grayscale indicates an unexpected
-transition.
+The escape is non-blocking. Sensor-link faults and match-end supervision remain
+active; separate grayscale-transition preemption for this ground escape is not
+yet implemented and remains part of the deferred safety work.
 
 ### `CLIMB_BACKWARD`
 
@@ -346,21 +348,18 @@ at a calibrated low speed rather than remaining stationary:
 `ARENA_SEARCH` itself does not change the patrol heading. Its forward speed
 must remain low enough for the edge supervisor and chassis braking distance.
 
-Candidate selection considers:
-
-1. an immediately close/threatening unknown robot-sized object;
-2. a previously confirmed gain block with a safe approach;
-3. the strongest persistent unclassified object;
-4. stale/poor candidates are discarded.
-
-Confirmed harmful blocks receive a temporary rejection memory so the robot
-does not repeatedly turn back toward the same object.
+When `TARGET_ALIGN` starts, it selects the cluster with the smallest angular
+error from A0/the current chassis heading. If two clusters have the same
+angular error, the stronger cluster wins. This minimizes unnecessary rotation
+and prevents a strong rear cluster from taking priority over a target already
+near the forward camera axis.
 
 ### `TARGET_ALIGN_AND_CLASSIFY`
 
 Actions:
 
-- rotate until the selected cluster is centered around A0;
+- repeatedly select the cluster nearest the current A0 direction and rotate
+  until that cluster is centered;
 - keep enough standoff distance for the camera to see the marker;
 - use A11/A0/A1 to refine alignment;
 - collect multiple fresh camera results.
@@ -420,10 +419,20 @@ with a stale camera result.
 For harmful or unresolved energy blocks:
 
 - stop approach;
-- prefer an in-place turn away rather than a long blind reverse;
-- use only a short reverse if recent path history proves that space behind was
-  safe;
-- mark the candidate temporarily and resume search.
+- turn clockwise/right in place for a calibrated duration intended to produce
+  approximately 180 degrees of heading change;
+- drive forward at a separate low departure speed for a calibrated short
+  duration, physically increasing separation from the rejected target;
+- ignore ordinary target clusters until both phases finish, while still
+  allowing sensor-link, match-end, platform-transition, fall and front-edge
+  safety preemption every control cycle;
+- stop at the end of departure and return to `ARENA_SEARCH`; another visible
+  cluster is then aligned, otherwise straight-ahead patrol resumes.
+
+The turn and departure durations are open-loop calibration values. The
+departure distance must be long enough that a stationary rejected block no
+longer dominates the next all-direction scan. Avoidance direction does not
+alternate between attempts.
 
 ## 9. Edge and fall recovery
 
@@ -485,9 +494,11 @@ If motion is commanded but ranging/grayscale features remain essentially
 unchanged for a calibrated interval:
 
 - stop the current action;
-- execute a short direction-reversing escape;
-- return to the relevant search state;
-- limit repeated retries and escalate to a broader rescan.
+- for a ground/climb action, enter the forward-then-right-turn
+  `FENCE_ESCAPE` sequence;
+- for an arena attack or push action, enter the right-turn-then-forward
+  `AVOID_BLOCK` sequence;
+- return to the relevant search state after that escape completes.
 
 This watchdog is distinct from the 10-second passive-play rule; it should react
 well before 10 seconds.
@@ -529,6 +540,10 @@ Keep these in a configuration file:
 - DI0/DI1 edge assertion/clear timing;
 - DI2 fence confirmation timing and valid rear ranging window;
 - search, alignment, probe, climb, patrol, attack, push, and recovery speeds;
+- `avoid_turn_speed` and `avoid_turn_time`: tune together for approximately
+  180 degrees of clockwise/right rotation;
+- `avoid_depart_speed` and `avoid_depart_time`: low-speed forward separation
+  after the avoidance turn;
 - `climb_prepare_speed`: forward speed used to create backward run-up room;
 - `climb_prepare_forward_time`: duration of that forward separation motion;
 - `climb_prepare_settle_time`: zero-speed dwell before changing to high-speed

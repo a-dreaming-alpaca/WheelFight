@@ -355,6 +355,36 @@ class MatchControllerTests(unittest.TestCase):
         self.assertEqual(h.controller.state, RobotState.TARGET_ALIGN)
         self.assertEqual((command.left_speed, command.right_speed), (0, 0))
 
+    def test_target_align_prefers_cluster_closest_to_front_over_strongest(self):
+        h = ControllerHarness()
+        h.controller.state = RobotState.TARGET_ALIGN
+        h.controller.state_entered = h.clock()
+
+        command = h.step(ir={1: 300, 9: 800}, gray=(700, 700))
+
+        self.assertEqual(h.controller.state, RobotState.TARGET_ALIGN)
+        self.assertGreater(command.left_speed, 0)
+        self.assertLess(command.right_speed, 0)
+        self.assertEqual(command.label, "target-align")
+
+    def test_target_align_stops_while_center_confirmation_is_held(self):
+        h = ControllerHarness()
+        h.controller.state = RobotState.TARGET_ALIGN
+        h.controller.state_entered = h.clock()
+
+        command = h.step(ir={0: 300}, gray=(700, 700))
+
+        self.assertEqual(h.controller.state, RobotState.TARGET_ALIGN)
+        self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+        self.assertEqual(command.label, "target-align-hold")
+
+        h.clock.advance(0.08)
+        command = h.step(ir={0: 300}, gray=(700, 700))
+
+        self.assertEqual(h.controller.state, RobotState.TARGET_CLASSIFY)
+        self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+        self.assertEqual(command.label, "target-centered-stop")
+
     def test_stale_sensor_stops_motion_and_enters_fault(self):
         h = ControllerHarness()
         h.controller.state = RobotState.ATTACK_ENEMY
@@ -389,8 +419,6 @@ class MatchControllerTests(unittest.TestCase):
 
     def test_double_edge_recovery_always_turns_right_without_alternating(self):
         h = ControllerHarness()
-        h.controller._alternate_turn_sign = -1
-        initial_alternate_sign = h.controller._alternate_turn_sign
         timing = h.controller.config.timing
 
         def enter_double_edge_recovery():
@@ -421,7 +449,6 @@ class MatchControllerTests(unittest.TestCase):
         )
         h.step(gray=(700, 700), digital=(0, 0, 1))
         self.assertEqual(h.controller.state, RobotState.ARENA_SEARCH)
-        self.assertEqual(h.controller._alternate_turn_sign, initial_alternate_sign)
 
         repeated_entered = enter_double_edge_recovery()
         h.clock.value = (
@@ -433,7 +460,43 @@ class MatchControllerTests(unittest.TestCase):
         repeated_turn = h.step(gray=(700, 700), digital=(0, 0, 1))
         self.assertGreater(repeated_turn.left_speed, 0)
         self.assertLess(repeated_turn.right_speed, 0)
-        self.assertEqual(h.controller._alternate_turn_sign, initial_alternate_sign)
+
+    def test_fence_escape_always_turns_right(self):
+        h = ControllerHarness()
+        timing = h.controller.config.timing
+
+        def run_fence_escape():
+            h.controller.state = RobotState.FENCE_ESCAPE
+            h.controller.state_entered = h.clock()
+            entered = h.controller.state_entered
+            h.clock.value = (
+                entered + timing.fence_escape_forward_time + 1e-6
+            )
+            turn_command = h.step()
+            h.clock.value = (
+                entered
+                + timing.fence_escape_forward_time
+                + timing.fence_escape_turn_time
+                + 1e-6
+            )
+            completion = h.step()
+            self.assertEqual(h.controller.state, RobotState.GROUND_SEARCH)
+            self.assertEqual(
+                (completion.left_speed, completion.right_speed),
+                (0, 0),
+            )
+            self.assertEqual(completion.label, "fence-escape-complete-stop")
+            return turn_command
+
+        first_turn = run_fence_escape()
+        repeated_turn = run_fence_escape()
+
+        for command in (first_turn, repeated_turn):
+            self.assertGreater(command.left_speed, 0)
+            self.assertLess(command.right_speed, 0)
+            self.assertEqual(command.label, "fence-escape-turn")
+        self.assertFalse(hasattr(h.controller, "_alternate_turn_sign"))
+        self.assertFalse(hasattr(h.controller, "_avoid_turn_sign"))
 
     def test_single_edge_recovery_turn_directions_are_unchanged(self):
         def turn_command_for(digital):
@@ -478,6 +541,88 @@ class MatchControllerTests(unittest.TestCase):
         h.step(ir={0: 800}, gray=(700, 700), vision=EnergyClass.HARMFUL)
         h.step(ir={0: 800}, gray=(700, 700), vision=EnergyClass.HARMFUL)
         self.assertEqual(h.controller.state, RobotState.AVOID_BLOCK)
+
+    def test_harmful_target_on_either_side_still_uses_fixed_right_avoidance(self):
+        for sensor_index in (1, 11):
+            with self.subTest(sensor_index=sensor_index):
+                h = ControllerHarness()
+                h.controller.state = RobotState.TARGET_CLASSIFY
+                h.controller.state_entered = h.clock()
+
+                h.step(
+                    ir={sensor_index: 800},
+                    gray=(700, 700),
+                    vision=EnergyClass.HARMFUL,
+                )
+                h.step(
+                    ir={sensor_index: 800},
+                    gray=(700, 700),
+                    vision=EnergyClass.HARMFUL,
+                )
+                command = h.step(
+                    ir={sensor_index: 800},
+                    gray=(700, 700),
+                    vision=EnergyClass.HARMFUL,
+                )
+
+                speed = h.controller.config.motion.avoid_turn_speed
+                self.assertEqual(h.controller.state, RobotState.AVOID_BLOCK)
+                self.assertEqual(
+                    (command.left_speed, command.right_speed),
+                    (speed, -speed),
+                )
+                self.assertEqual(command.label, "avoid-block-turn-right")
+
+    def test_avoid_block_turns_right_then_drives_forward_before_search(self):
+        h = ControllerHarness()
+        h.controller.state = RobotState.AVOID_BLOCK
+        h.controller.state_entered = h.clock()
+        entered = h.controller.state_entered
+        timing = h.controller.config.timing
+        motion = h.controller.config.motion
+
+        command = h.step(ir={0: 800}, gray=(700, 700))
+        self.assertEqual(
+            (command.left_speed, command.right_speed),
+            (motion.avoid_turn_speed, -motion.avoid_turn_speed),
+        )
+        self.assertEqual(command.label, "avoid-block-turn-right")
+
+        h.clock.value = entered + timing.avoid_turn_time + 1e-6
+        command = h.step(ir={6: 800}, gray=(700, 700))
+        self.assertEqual(h.controller.state, RobotState.AVOID_BLOCK)
+        self.assertEqual(
+            (command.left_speed, command.right_speed),
+            (motion.avoid_depart_speed, motion.avoid_depart_speed),
+        )
+        self.assertEqual(command.label, "avoid-block-depart-forward")
+
+        h.clock.value = (
+            entered
+            + timing.avoid_turn_time
+            + timing.avoid_depart_time
+            + 1e-6
+        )
+        command = h.step(gray=(700, 700))
+        self.assertEqual(h.controller.state, RobotState.ARENA_SEARCH)
+        self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+        self.assertEqual(command.label, "avoid-departure-complete-stop")
+
+        command = h.step(gray=(700, 700))
+        self.assertGreater(command.left_speed, 0)
+        self.assertEqual(command.left_speed, command.right_speed)
+
+    def test_edge_preempts_avoid_departure(self):
+        h = ControllerHarness()
+        h.controller.state = RobotState.AVOID_BLOCK
+        h.controller.state_entered = h.clock()
+        h.clock.value += h.controller.config.timing.avoid_turn_time + 1e-6
+
+        command = h.step(gray=(700, 700), digital=(1, 0, 1))
+
+        self.assertEqual(h.controller.state, RobotState.EDGE_RECOVER)
+        self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+        self.assertEqual(command.label, "edge-stop")
 
     def test_gain_tag_enters_push_after_multiple_votes(self):
         h = ControllerHarness()
