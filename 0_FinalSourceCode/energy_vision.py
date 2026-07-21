@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
+from functools import lru_cache
 from typing import Any, Optional
 
 from robot_config import DEFAULT_CONFIG, VisionConfig
@@ -39,6 +41,7 @@ class VisionResult:
     harmful_color_ratio: float = 0.0
     red_x_score: float = 0.0
     red_x_detected: bool = False
+    red_x_angle_deg: Optional[float] = None
 
     def is_fresh(self, now: float, stale_after: float) -> bool:
         return now - self.timestamp <= stale_after
@@ -66,6 +69,7 @@ class RedXEvidence:
     center_fill: float = 0.0
     off_diag_fill: float = 0.0
     arm_fills: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    angle_deg: Optional[float] = None
     candidate_box: Optional[tuple[int, int, int, int]] = None
 
 
@@ -175,6 +179,7 @@ class ColorEnergyDetector:
                 "harmful_color_ratio": self._latest.harmful_color_ratio,
                 "red_x_score": self._latest.red_x_score,
                 "red_x_detected": self._latest.red_x_detected,
+                "red_x_angle_deg": self._latest.red_x_angle_deg,
                 "timestamp": self._latest.timestamp,
             }
 
@@ -300,7 +305,6 @@ class ColorEnergyDetector:
             gain_ratio,
             harmful_ratio,
             red_x_evidence.score,
-            red_x_evidence.off_diag_fill,
             config.min_color_area_ratio,
             config.min_red_x_score,
         )
@@ -318,6 +322,7 @@ class ColorEnergyDetector:
                 harmful_color_ratio=harmful_ratio,
                 red_x_score=red_x_evidence.score,
                 red_x_detected=red_x_evidence.detected,
+                red_x_angle_deg=red_x_evidence.angle_deg,
             ),
             roi_bounds=roi_bounds,
             gain_mask=gain_mask,
@@ -381,15 +386,15 @@ class ColorEnergyDetector:
                 (RED_X_GRID_SIZE, RED_X_GRID_SIZE),
                 interpolation=cv2.INTER_NEAREST,
             )
-            fills = self._red_x_grid_fills(
+            score, angle_deg, fills = self._best_red_x_grid_match(
                 normalized.tobytes(),
                 RED_X_GRID_SIZE,
                 self.config.red_x_diagonal_band_ratio,
                 self.config.red_x_center_size_ratio,
+                self.config.red_x_angle_step_deg,
             )
             diag_down_fill, diag_up_fill, center_fill, off_diag_fill = fills[:4]
             arm_fills = fills[4:8]
-            score = self._red_x_score_from_fills(fills)
             evidence = RedXEvidence(
                 score=score,
                 detected=score >= self.config.min_red_x_score,
@@ -398,6 +403,7 @@ class ColorEnergyDetector:
                 center_fill=center_fill,
                 off_diag_fill=off_diag_fill,
                 arm_fills=arm_fills,
+                angle_deg=angle_deg,
                 candidate_box=(x, y, width, height),
             )
             candidate_key = (score, candidate_pixels)
@@ -413,47 +419,119 @@ class ColorEnergyDetector:
         grid_size: int,
         diagonal_band_ratio: float,
         center_size_ratio: float,
+        angle_deg: float = 45.0,
     ) -> tuple[float, ...]:
         if grid_size <= 0 or len(grid_bytes) < grid_size * grid_size:
             return (0.0,) * 8
 
+        regions = ColorEnergyDetector._red_x_grid_regions(
+            grid_size,
+            diagonal_band_ratio,
+            center_size_ratio,
+            angle_deg % 90.0,
+        )
+        return tuple(
+            (
+                sum(1 for pixel_index in region if grid_bytes[pixel_index])
+                / len(region)
+                if region
+                else 0.0
+            )
+            for region in regions
+        )
+
+    @staticmethod
+    @lru_cache(maxsize=256)
+    def _red_x_grid_regions(
+        grid_size: int,
+        diagonal_band_ratio: float,
+        center_size_ratio: float,
+        angle_deg: float,
+    ) -> tuple[tuple[int, ...], ...]:
+        """Build reusable pixel regions for one normalized cross angle."""
+
         band = max(0.0, min(0.49, diagonal_band_ratio))
+        band_distance = band / math.sqrt(2.0)
         center_half = max(0.0, min(0.5, center_size_ratio / 2.0))
-        red_counts = [0] * 8
-        total_counts = [0] * 8
+        angle_radians = math.radians(angle_deg % 90.0)
+        line_a_x = math.cos(angle_radians)
+        line_a_y = math.sin(angle_radians)
+        line_b_x = -line_a_y
+        line_b_y = line_a_x
+        region_indices: list[list[int]] = [[] for _ in range(8)]
 
         for row in range(grid_size):
             v = (row + 0.5) / grid_size
             for column in range(grid_size):
                 u = (column + 0.5) / grid_size
-                red = grid_bytes[row * grid_size + column] != 0
-                diag_down = abs(u - v) <= band
-                diag_up = abs(u + v - 1.0) <= band
+                x = u - 0.5
+                y = v - 0.5
+                along_a = x * line_a_x + y * line_a_y
+                along_b = x * line_b_x + y * line_b_y
+                line_a = abs(along_b) <= band_distance
+                line_b = abs(along_a) <= band_distance
                 center = (
-                    abs(u - 0.5) <= center_half
-                    and abs(v - 0.5) <= center_half
+                    abs(x) <= center_half
+                    and abs(y) <= center_half
                 )
-                off_diagonal = not (diag_down or diag_up)
-                regions = (
-                    diag_down,
-                    diag_up,
+                off_cross = not (line_a or line_b)
+                region_membership = (
+                    line_a,
+                    line_b,
                     center,
-                    off_diagonal,
-                    diag_down and u < 0.5 and v < 0.5,
-                    diag_down and u >= 0.5 and v >= 0.5,
-                    diag_up and u >= 0.5 and v < 0.5,
-                    diag_up and u < 0.5 and v >= 0.5,
+                    off_cross,
+                    line_a and along_a < -abs(along_b),
+                    line_a and along_a >= abs(along_b),
+                    line_b and along_b < -abs(along_a),
+                    line_b and along_b >= abs(along_a),
                 )
-                for index, inside in enumerate(regions):
+                pixel_index = row * grid_size + column
+                for region, inside in zip(
+                    region_indices, region_membership
+                ):
                     if inside:
-                        total_counts[index] += 1
-                        if red:
-                            red_counts[index] += 1
+                        region.append(pixel_index)
 
-        return tuple(
-            red_count / total_count if total_count else 0.0
-            for red_count, total_count in zip(red_counts, total_counts)
-        )
+        return tuple(tuple(region) for region in region_indices)
+
+    @classmethod
+    def _best_red_x_grid_match(
+        cls,
+        grid_bytes: bytes,
+        grid_size: int,
+        diagonal_band_ratio: float,
+        center_size_ratio: float,
+        angle_step_deg: float,
+    ) -> tuple[float, float, tuple[float, ...]]:
+        """Return the strongest four-arm cross score over one 90° period."""
+
+        # A coarser step can leave a cross too far from every sampled angle
+        # and defeat the rotation-independent contract. Keep the tunable
+        # search within a range that still has ample score margin.
+        step = max(1.0, min(15.0, float(angle_step_deg)))
+        best_score = 0.0
+        best_angle = 0.0
+        best_fills = (0.0,) * 8
+        best_key = (-1.0, -1.0, -1.0, -1.0)
+        angle = 0.0
+        while angle < 90.0:
+            fills = cls._red_x_grid_fills(
+                grid_bytes,
+                grid_size,
+                diagonal_band_ratio,
+                center_size_ratio,
+                angle,
+            )
+            score = cls._red_x_score_from_fills(fills)
+            arm_floor = min(fills[4:8]) if len(fills) >= 8 else 0.0
+            key = (score, arm_floor, fills[2], -fills[3])
+            if key > best_key:
+                best_score = score
+                best_angle = angle
+                best_fills = fills
+                best_key = key
+            angle += step
+        return best_score, best_angle, best_fills
 
     @staticmethod
     def _red_x_score_from_fills(fills: tuple[float, ...]) -> float:
@@ -469,7 +547,6 @@ class ColorEnergyDetector:
         gain_ratio: float,
         harmful_ratio: float,
         red_x_score: float,
-        red_off_diag_fill: float,
         minimum_color_ratio: float,
         minimum_red_x_score: float,
     ) -> tuple[EnergyClass, float]:
@@ -494,19 +571,18 @@ class ColorEnergyDetector:
             return EnergyClass.GAIN, ColorEnergyDetector._color_confidence(
                 gain_ratio, color_threshold
             )
+        if harmful_ratio >= color_threshold:
+            # Visible red without a confirmed cross is ambiguous, not enemy
+            # evidence. This covers rotated, distorted, or incomplete harmful
+            # markers without weakening the NO_BLOCK_MARKER safety contract.
+            return EnergyClass.UNKNOWN, 0.0
 
         gain_absence = 1.0 - min(
             1.0, max(0.0, gain_ratio) / color_threshold
         )
-        if harmful_ratio >= color_threshold:
-            # Strong red outside the X diagonals is positive evidence for a
-            # non-X arena marking. A nearly-X-shaped red target stays low
-            # confidence so the state machine will treat it as uncertain.
-            harmful_absence = min(1.0, max(0.0, red_off_diag_fill))
-        else:
-            harmful_absence = 1.0 - min(
-                1.0, max(0.0, harmful_ratio) / color_threshold
-            )
+        harmful_absence = 1.0 - min(
+            1.0, max(0.0, harmful_ratio) / color_threshold
+        )
         no_marker_confidence = min(gain_absence, harmful_absence)
         return EnergyClass.NO_BLOCK_MARKER, no_marker_confidence
 

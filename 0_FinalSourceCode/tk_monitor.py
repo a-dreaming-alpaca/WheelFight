@@ -132,6 +132,7 @@ HTML_PAGE = """<!doctype html>
       ['分类', at(data, 'vision.classification')], ['黄绿色占比', at(data, 'vision.gain_color_ratio')],
       ['红色占比', at(data, 'vision.harmful_color_ratio')], ['置信度', at(data, 'vision.confidence')],
       ['红色X分数', at(data, 'vision.red_x_score')], ['红色X确认', at(data, 'vision.red_x_detected')],
+      ['最佳交叉角度/°', at(data, 'vision.red_x_angle_deg')],
       ['结果年龄/s', at(data, 'vision.age')],
       ['后端健康', at(data, 'vision_backend.healthy')], ['摄像头序号', at(data, 'vision_backend.camera_index')],
       ['可用模式', at(data, 'vision_available')], ['错误', at(data, 'vision.error', at(data, 'vision_backend.last_error'))]

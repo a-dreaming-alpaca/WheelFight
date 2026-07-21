@@ -7,6 +7,7 @@ the exact same ColorEnergyDetector analysis used during a match.
 
 from __future__ import annotations
 
+import math
 import os
 import select
 import sys
@@ -111,7 +112,14 @@ def _build_status_lines(
         ),
         (
             f"Red X: {'YES' if red_x.detected else 'NO'}  score {red_x.score:.3f}  "
-            f"threshold {config.min_red_x_score:.3f}"
+            f"threshold {config.min_red_x_score:.3f}  "
+            f"angle {red_x.angle_deg:.1f} deg"
+            if red_x.angle_deg is not None
+            else (
+                f"Red X: {'YES' if red_x.detected else 'NO'}  "
+                f"score {red_x.score:.3f}  threshold {config.min_red_x_score:.3f}  "
+                "angle --"
+            )
         ),
         (
             "X arms="
@@ -134,6 +142,34 @@ def _put_text(cv2, frame, text: str, origin, color) -> None:
     line_type = getattr(cv2, "LINE_AA", 8)
     cv2.putText(frame, text, origin, font, 0.52, (0, 0, 0), 3, line_type)
     cv2.putText(frame, text, origin, font, 0.52, color, 1, line_type)
+
+
+def _line_box_endpoints(left, top, right, bottom, angle_deg):
+    center_x = (left + right) / 2.0
+    center_y = (top + bottom) / 2.0
+    box_width = max(0.0, right - left)
+    box_height = max(0.0, bottom - top)
+    radians = math.radians(angle_deg)
+    direction_x = math.cos(radians)
+    direction_y = math.sin(radians)
+    extents = []
+    if abs(direction_x) > 1e-9:
+        extents.append(0.5 / abs(direction_x))
+    if abs(direction_y) > 1e-9:
+        extents.append(0.5 / abs(direction_y))
+    normalized_extent = min(extents) if extents else 0.0
+    offset_x = normalized_extent * direction_x * box_width
+    offset_y = normalized_extent * direction_y * box_height
+    return (
+        (
+            int(round(center_x - offset_x)),
+            int(round(center_y - offset_y)),
+        ),
+        (
+            int(round(center_x + offset_x)),
+            int(round(center_y + offset_y)),
+        ),
+    )
 
 
 def _build_display_frame(
@@ -170,8 +206,16 @@ def _build_display_frame(
         bottom = top + box_height - 1
         guide_color = (0, 255, 0) if red_x.detected else (0, 165, 255)
         cv2.rectangle(display, (left, top), (right, bottom), guide_color, 1)
-        cv2.line(display, (left, top), (right, bottom), guide_color, 1)
-        cv2.line(display, (right, top), (left, bottom), guide_color, 1)
+        angle_deg = red_x.angle_deg if red_x.angle_deg is not None else 45.0
+        for guide_angle in (angle_deg, angle_deg + 90.0):
+            start, end = _line_box_endpoints(
+                left,
+                top,
+                right,
+                bottom,
+                guide_angle,
+            )
+            cv2.line(display, start, end, guide_color, 1)
 
     color = _classification_bgr(analysis.result.classification)
     lines = _build_status_lines(
@@ -199,6 +243,7 @@ def _format_terminal_status(
         f"red={result.harmful_color_ratio:.4f} "
         f"red_x={result.red_x_score:.3f}/"
         f"{'Y' if result.red_x_detected else 'N'} "
+        f"angle={result.red_x_angle_deg if result.red_x_angle_deg is not None else '--'} "
         f"confidence={result.confidence:.3f}"
     )
 

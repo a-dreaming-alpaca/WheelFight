@@ -1,3 +1,4 @@
+import math
 import sys
 import unittest
 from dataclasses import replace
@@ -47,20 +48,45 @@ class OpenCVRedXTests(unittest.TestCase):
     def _analyze(self, frame):
         return self.detector.analyze_frame(frame, cv2).result
 
-    def _draw_red_x(self, frame):
-        cv2.line(frame, (90, 50), (230, 190), self.red, 24, cv2.LINE_8)
-        cv2.line(frame, (230, 50), (90, 190), self.red, 24, cv2.LINE_8)
+    def _draw_red_cross(self, frame, angle_deg=45.0, missing_arms=()):
+        center = (160, 120)
+        radius = 72
+        radians = math.radians(angle_deg)
+        directions = (
+            (math.cos(radians), math.sin(radians)),
+            (-math.sin(radians), math.cos(radians)),
+        )
+        arm_index = 0
+        for direction_x, direction_y in directions:
+            for sign in (-1, 1):
+                endpoint = (
+                    round(center[0] + sign * radius * direction_x),
+                    round(center[1] + sign * radius * direction_y),
+                )
+                if arm_index not in missing_arms:
+                    cv2.line(
+                        frame,
+                        center,
+                        endpoint,
+                        self.red,
+                        24,
+                        cv2.LINE_8,
+                    )
+                arm_index += 1
 
-    def test_red_x_is_harmful(self):
-        frame = self._frame()
-        self._draw_red_x(frame)
+    def test_red_cross_is_harmful_at_any_rotation(self):
+        for angle_deg in (0.0, 17.0, 33.0, 45.0, 68.0, 83.0):
+            with self.subTest(angle_deg=angle_deg):
+                frame = self._frame()
+                self._draw_red_cross(frame, angle_deg)
 
-        result = self._analyze(frame)
+                result = self._analyze(frame)
 
-        self.assertEqual(result.classification, EnergyClass.HARMFUL)
-        self.assertTrue(result.red_x_detected)
+                self.assertEqual(result.classification, EnergyClass.HARMFUL)
+                self.assertTrue(result.red_x_detected)
+                self.assertIsNotNone(result.red_x_angle_deg)
 
-    def test_red_box_solid_patch_single_diagonal_and_plus_are_not_harmful(self):
+    def test_red_non_cross_shapes_are_unknown(self):
         patterns = {}
 
         box = self._frame()
@@ -75,10 +101,14 @@ class OpenCVRedXTests(unittest.TestCase):
         cv2.line(diagonal, (90, 50), (230, 190), self.red, 24, cv2.LINE_8)
         patterns["single-diagonal"] = diagonal
 
-        plus = self._frame()
-        cv2.line(plus, (160, 50), (160, 190), self.red, 24, cv2.LINE_8)
-        cv2.line(plus, (90, 120), (230, 120), self.red, 24, cv2.LINE_8)
-        patterns["plus"] = plus
+        for missing_arm_index in range(4):
+            missing_arm = self._frame()
+            self._draw_red_cross(
+                missing_arm,
+                31.0,
+                missing_arms=(missing_arm_index,),
+            )
+            patterns[f"missing-arm-{missing_arm_index}"] = missing_arm
 
         arena_mark = self._frame()
         cv2.rectangle(arena_mark, (70, 40), (250, 200), self.red, -1, cv2.LINE_8)
@@ -91,7 +121,7 @@ class OpenCVRedXTests(unittest.TestCase):
         for name, frame in patterns.items():
             with self.subTest(name=name):
                 result = self._analyze(frame)
-                self.assertEqual(result.classification, EnergyClass.NO_BLOCK_MARKER)
+                self.assertEqual(result.classification, EnergyClass.UNKNOWN)
                 self.assertFalse(result.red_x_detected)
 
     def test_gain_remains_color_only_next_to_red_box(self):
@@ -106,7 +136,7 @@ class OpenCVRedXTests(unittest.TestCase):
     def test_gain_and_valid_red_x_are_unknown(self):
         frame = self._frame()
         cv2.rectangle(frame, (10, 10), (80, 80), self.gain, -1, cv2.LINE_8)
-        self._draw_red_x(frame)
+        self._draw_red_cross(frame)
 
         result = self._analyze(frame)
 

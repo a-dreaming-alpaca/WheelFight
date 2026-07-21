@@ -153,11 +153,16 @@ class VisionConfig:
     # camera; raise it if small colored noise is classified as a block.
     min_color_area_ratio: float = 0.015
 
-    # A harmful block must also form a red X. The red candidate is normalized
-    # before these ratios are evaluated, so the score is largely independent
-    # of its apparent size. These are provisional calibration values.
+    # A harmful block must also form a complete four-arm red cross. The two
+    # crossing lines are searched over one 90-degree period, so an X that
+    # appears as a plus from an oblique view can still match. The candidate is
+    # normalized first, making the score largely size-independent. These are
+    # provisional calibration values.
     red_x_diagonal_band_ratio: float = 0.14
     red_x_center_size_ratio: float = 0.22
+    # Smaller steps tolerate more image rotation but evaluate more angles;
+    # the detector clamps this value to the safe 1..15 degree range.
+    red_x_angle_step_deg: float = 5.0
     min_red_x_score: float = 0.20
 
     reconnect_interval: float = 1.0

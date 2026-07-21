@@ -1,3 +1,4 @@
+import math
 import sys
 import unittest
 from dataclasses import replace
@@ -20,7 +21,46 @@ from robot_config import DEFAULT_CONFIG  # noqa: E402
 GRID_SIZE = 48
 
 
+def make_rotated_cross_grid(angle_deg, missing_arms=()):
+    """Build a two-line cross in the detector's normalized coordinates."""
+
+    angle_radians = math.radians(angle_deg % 90.0)
+    line_a_x = math.cos(angle_radians)
+    line_a_y = math.sin(angle_radians)
+    line_b_x = -line_a_y
+    line_b_y = line_a_x
+    values = bytearray()
+    for row in range(GRID_SIZE):
+        y = (row + 0.5) / GRID_SIZE - 0.5
+        for column in range(GRID_SIZE):
+            x = (column + 0.5) / GRID_SIZE - 0.5
+            along_a = x * line_a_x + y * line_a_y
+            along_b = x * line_b_x + y * line_b_y
+            line_a = abs(along_b) <= 0.07
+            line_b = abs(along_a) <= 0.07
+            arms = (
+                line_a and along_a < -abs(along_b),
+                line_a and along_a >= abs(along_b),
+                line_b and along_b < -abs(along_a),
+                line_b and along_b >= abs(along_a),
+            )
+            red = (line_a or line_b) and not any(
+                arms[index] for index in missing_arms
+            )
+            values.append(255 if red else 0)
+    return bytes(values)
+
+
 def make_red_grid(pattern):
+    if pattern == "x":
+        return make_rotated_cross_grid(45.0)
+    if pattern == "plus":
+        return make_rotated_cross_grid(0.0)
+    if pattern == "missing-arm":
+        return make_rotated_cross_grid(45.0, missing_arms=(0,))
+    if pattern == "missing-top-arms":
+        return make_rotated_cross_grid(45.0, missing_arms=(0, 2))
+
     values = bytearray()
     for row in range(GRID_SIZE):
         v = (row + 0.5) / GRID_SIZE
@@ -34,21 +74,11 @@ def make_red_grid(pattern):
                 or column < 5
                 or column >= GRID_SIZE - 5
             )
-            plus = abs(u - 0.5) <= 0.06 or abs(v - 0.5) <= 0.06
-            full_x = diag_down or diag_up
-            missing_arm = full_x and not (
-                diag_down and u < 0.5 and v < 0.5
-            )
-            missing_top_arms = full_x and v >= 0.5
             triangle = v >= 2.0 * abs(u - 0.5)
             red = {
-                "x": full_x,
                 "single-diagonal": diag_down,
-                "missing-arm": missing_arm,
-                "missing-top-arms": missing_top_arms,
                 "box": border,
                 "solid": True,
-                "plus": plus,
                 "triangle": triangle,
                 "none": False,
             }[pattern]
@@ -256,16 +286,21 @@ class ColorEnergyDetectorTests(unittest.TestCase):
         color_threshold = self.config.min_color_area_ratio
         x_threshold = self.config.min_red_x_score
         cases = (
-            (0.0, 0.0, 0.0, 0.0, EnergyClass.NO_BLOCK_MARKER, 1.0),
-            (color_threshold, 0.0, 0.0, 0.0, EnergyClass.GAIN, 0.5),
-            (0.0, color_threshold, 0.0, 0.8, EnergyClass.NO_BLOCK_MARKER, 0.8),
-            (0.0, color_threshold, 0.0, 0.1, EnergyClass.NO_BLOCK_MARKER, 0.1),
-            (0.0, color_threshold, x_threshold, 0.0, EnergyClass.HARMFUL, 0.5),
+            (0.0, 0.0, 0.0, EnergyClass.NO_BLOCK_MARKER, 1.0),
+            (color_threshold, 0.0, 0.0, EnergyClass.GAIN, 0.5),
+            (0.0, color_threshold, 0.0, EnergyClass.UNKNOWN, 0.0),
+            (
+                0.0,
+                color_threshold * 0.5,
+                0.0,
+                EnergyClass.NO_BLOCK_MARKER,
+                0.5,
+            ),
+            (0.0, color_threshold, x_threshold, EnergyClass.HARMFUL, 0.5),
             (
                 color_threshold,
                 color_threshold,
                 0.0,
-                0.8,
                 EnergyClass.GAIN,
                 0.5,
             ),
@@ -273,7 +308,6 @@ class ColorEnergyDetectorTests(unittest.TestCase):
                 color_threshold,
                 color_threshold,
                 x_threshold,
-                0.0,
                 EnergyClass.UNKNOWN,
                 0.0,
             ),
@@ -283,7 +317,6 @@ class ColorEnergyDetectorTests(unittest.TestCase):
             gain,
             harmful,
             x_score,
-            off_diag_fill,
             expected_class,
             expected_confidence,
         ) in cases:
@@ -291,44 +324,78 @@ class ColorEnergyDetectorTests(unittest.TestCase):
                 gain=gain,
                 harmful=harmful,
                 x_score=x_score,
-                off_diag_fill=off_diag_fill,
             ):
                 classification, confidence = self.detector._classify_evidence(
                     gain,
                     harmful,
                     x_score,
-                    off_diag_fill,
                     color_threshold,
                     x_threshold,
                 )
                 self.assertEqual(classification, expected_class)
                 self.assertAlmostEqual(confidence, expected_confidence)
 
-    def test_red_x_grid_score_rejects_box_solid_plus_and_one_diagonal(self):
-        scores = {}
+    def test_red_x_grid_match_accepts_cross_at_any_rotation(self):
+        for source_angle in (0.0, 7.0, 23.0, 37.0, 45.0, 68.0, 83.0):
+            with self.subTest(source_angle=source_angle):
+                score, best_angle, _ = self.detector._best_red_x_grid_match(
+                    make_rotated_cross_grid(source_angle),
+                    GRID_SIZE,
+                    self.config.red_x_diagonal_band_ratio,
+                    self.config.red_x_center_size_ratio,
+                    self.config.red_x_angle_step_deg,
+                )
+                self.assertGreaterEqual(score, self.config.min_red_x_score)
+                self.assertGreaterEqual(best_angle, 0.0)
+                self.assertLess(best_angle, 90.0)
+                angle_error = abs(best_angle - source_angle) % 90.0
+                angle_error = min(angle_error, 90.0 - angle_error)
+                self.assertLessEqual(angle_error, 5.0)
+
+    def test_red_x_angle_step_is_clamped_to_safe_rotation_coverage(self):
+        score, _, _ = self.detector._best_red_x_grid_match(
+            make_rotated_cross_grid(22.5),
+            GRID_SIZE,
+            self.config.red_x_diagonal_band_ratio,
+            self.config.red_x_center_size_ratio,
+            45.0,
+        )
+
+        self.assertGreaterEqual(score, self.config.min_red_x_score)
+
+    def test_red_x_grid_match_rejects_non_cross_shapes(self):
         patterns = (
-            "x",
             "box",
             "solid",
-            "plus",
             "single-diagonal",
             "missing-arm",
             "missing-top-arms",
             "triangle",
         )
         for pattern in patterns:
-            fills = self.detector._red_x_grid_fills(
+            score, _, _ = self.detector._best_red_x_grid_match(
                 make_red_grid(pattern),
                 GRID_SIZE,
                 self.config.red_x_diagonal_band_ratio,
                 self.config.red_x_center_size_ratio,
+                self.config.red_x_angle_step_deg,
             )
-            scores[pattern] = self.detector._red_x_score_from_fills(fills)
-
-        self.assertGreaterEqual(scores["x"], self.config.min_red_x_score)
-        for pattern in patterns[1:]:
             with self.subTest(pattern=pattern):
-                self.assertLess(scores[pattern], self.config.min_red_x_score)
+                self.assertLess(score, self.config.min_red_x_score)
+
+        for missing_arm in range(4):
+            with self.subTest(missing_arm=missing_arm):
+                score, _, _ = self.detector._best_red_x_grid_match(
+                    make_rotated_cross_grid(
+                        31.0,
+                        missing_arms=(missing_arm,),
+                    ),
+                    GRID_SIZE,
+                    self.config.red_x_diagonal_band_ratio,
+                    self.config.red_x_center_size_ratio,
+                    self.config.red_x_angle_step_deg,
+                )
+                self.assertLess(score, self.config.min_red_x_score)
 
     def test_red_x_contours_skip_holes_but_keep_nested_foreground(self):
         frame = FakeFrame((100, 200, 3))
@@ -339,7 +406,7 @@ class ColorEnergyDetectorTests(unittest.TestCase):
             contour_parents=(-1, 0),
         )
         field_result = self.detector.analyze_frame(frame, field_mark).result
-        self.assertEqual(field_result.classification, EnergyClass.NO_BLOCK_MARKER)
+        self.assertEqual(field_result.classification, EnergyClass.UNKNOWN)
         self.assertFalse(field_result.red_x_detected)
 
         framed_x = FakeCV2(
@@ -391,6 +458,7 @@ class ColorEnergyDetectorTests(unittest.TestCase):
         self.assertAlmostEqual(result.harmful_color_ratio, 0.015)
         self.assertTrue(result.red_x_detected)
         self.assertGreaterEqual(result.red_x_score, self.config.min_red_x_score)
+        self.assertIsNotNone(result.red_x_angle_deg)
         self.assertGreaterEqual(result.confidence, self.config.min_color_confidence)
 
     def test_red_box_without_x_is_not_harmful(self):
@@ -399,9 +467,9 @@ class ColorEnergyDetectorTests(unittest.TestCase):
             FakeCV2(red_low=126, red_pattern="box"),
         )
 
-        self.assertEqual(result.classification, EnergyClass.NO_BLOCK_MARKER)
+        self.assertEqual(result.classification, EnergyClass.UNKNOWN)
         self.assertFalse(result.red_x_detected)
-        self.assertGreaterEqual(result.confidence, self.config.min_color_confidence)
+        self.assertEqual(result.confidence, 0.0)
 
     def test_gain_color_is_not_blocked_by_unshaped_red_area(self):
         result = self.detector._detect_frame(
@@ -462,6 +530,7 @@ class ColorEnergyDetectorTests(unittest.TestCase):
         self.assertEqual(result.harmful_color_ratio, 0.0)
         self.assertEqual(result.red_x_score, 0.0)
         self.assertFalse(result.red_x_detected)
+        self.assertIsNone(result.red_x_angle_deg)
 
 
 if __name__ == "__main__":

@@ -117,6 +117,7 @@ gain_color_ratio: yellow-green pixel share inside the ROI
 harmful_color_ratio: red pixel share inside the ROI
 red_x_score: normalized red-X geometry score
 red_x_detected: whether the red-X score reaches its threshold
+red_x_angle_deg: best angle in the normalized red-candidate grid
 timestamp: monotonic time
 ```
 
@@ -124,21 +125,26 @@ The color detector converts a fixed central camera ROI to HSV and measures the
 configured target colors. Its deliberately simple classification rules are:
 
 - yellow-green reaches the configured area threshold -> `GAIN`;
-- red reaches the area threshold and forms a clear X -> `HARMFUL`;
-- neither complete marker is present -> `NO_BLOCK_MARKER`;
+- red reaches the area threshold and forms a clear cross at any searched angle
+  -> `HARMFUL`;
+- significant red without a confirmed cross -> `UNKNOWN`;
+- neither marker color reaches its area threshold -> `NO_BLOCK_MARKER`;
 - yellow-green and a valid red X are both present -> `UNKNOWN`.
 
 Each connected red candidate is normalized to a small grid. Its X score
-requires red coverage in all four diagonal arms and the crossing center, then
-penalizes red coverage outside the diagonals; the highest valid candidate score is used. A
+searches one 90-degree period for two perpendicular crossing lines, requires
+red coverage in all four arms and the crossing center, then penalizes red
+coverage outside the selected lines; the highest candidate score is used. A
 red rectangular arena marking or a solid red patch therefore does not satisfy
 the harmful-block rule, even if it appears beside a separate red X. Gain
 recognition remains a color-only decision.
+Consequently, yellow-green plus unrelated invalid red remains `GAIN`; only a
+confirmed red cross conflicts with yellow-green and produces `UNKNOWN`.
 
 A `NO_BLOCK_MARKER` frame is counted as enemy evidence only when its confidence
-also reaches the configured minimum. A clear high-fill arena marking produces
-strong non-X evidence, while a nearly-X-shaped but incomplete red target stays
-low confidence and is treated as `UNKNOWN` by the voting state.
+also reaches the configured minimum. Any frame with significant unconfirmed red
+is `UNKNOWN`, so a rotated, distorted, or incomplete harmful marker cannot
+become enemy evidence merely because its cross score missed the threshold.
 
 The state machine requires consecutive, consistent fresh-frame votes before
 acting on these per-frame results. An unknown or conflicting frame resets the

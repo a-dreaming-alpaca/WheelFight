@@ -972,6 +972,7 @@ class MatchController:
                 "harmful_color_ratio": vision.harmful_color_ratio,
                 "red_x_score": vision.red_x_score,
                 "red_x_detected": vision.red_x_detected,
+                "red_x_angle_deg": vision.red_x_angle_deg,
                 "age": max(0.0, self.clock() - vision.timestamp),
                 "error": vision.error,
             },

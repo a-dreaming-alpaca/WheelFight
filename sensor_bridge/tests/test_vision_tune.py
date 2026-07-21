@@ -18,6 +18,7 @@ from vision_tune import (  # noqa: E402
     _build_status_lines,
     _classification_bgr,
     _format_terminal_status,
+    _line_box_endpoints,
     _open_first_camera,
     _stop_requested,
 )
@@ -133,6 +134,7 @@ class VisionTuneTests(unittest.TestCase):
             harmful_color_ratio=0.0012,
             red_x_score=0.42,
             red_x_detected=True,
+            red_x_angle_deg=30.0,
         )
         analysis = ColorFrameAnalysis(
             result=result,
@@ -147,6 +149,7 @@ class VisionTuneTests(unittest.TestCase):
                 center_fill=0.90,
                 off_diag_fill=0.10,
                 arm_fills=(0.80, 0.78, 0.76, 0.74),
+                angle_deg=30.0,
                 candidate_box=(20, 20, 100, 100),
             ),
         )
@@ -167,10 +170,28 @@ class VisionTuneTests(unittest.TestCase):
         self.assertIn("threshold 1.500%", lines[2])
         self.assertIn("Red X: YES", lines[4])
         self.assertIn("score 0.420", lines[4])
+        self.assertIn("angle 30.0 deg", lines[4])
         self.assertIn("class=GAIN", terminal)
         self.assertIn("gain=0.0234", terminal)
         self.assertIn("red=0.0012", terminal)
         self.assertIn("red_x=0.420/Y", terminal)
+        self.assertIn("angle=30.0", terminal)
+
+    def test_cross_guides_map_normalized_angles_into_candidate_box(self):
+        box = (10, 20, 110, 70)
+
+        self.assertEqual(
+            _line_box_endpoints(*box, 0.0),
+            ((10, 45), (110, 45)),
+        )
+        self.assertEqual(
+            _line_box_endpoints(*box, 45.0),
+            ((10, 20), (110, 70)),
+        )
+        self.assertEqual(
+            _line_box_endpoints(*box, 90.0),
+            ((60, 20), (60, 70)),
+        )
 
     def test_classification_colors_distinguish_gain_and_harmful(self):
         self.assertNotEqual(
