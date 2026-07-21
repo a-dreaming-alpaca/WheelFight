@@ -18,7 +18,7 @@ RK3588S（感知层 → 可抢占状态机 → 电机/舵机）
 ## 主要文件
 
 - `match_demo_state_machine.py`：比赛入口、状态机、安全仲裁和状态输出。
-- `robot_config.py`：所有传感器阈值、速度、持续时间、设备 ID 和舵机角度。
+- `robot_config.py`：所有传感器阈值与通道组、速度、持续时间、通信时间、设备 ID 和舵机角度。
 - `mega_sensor_reader.py`：Mega 串口自动发现、CRC 校验、丢帧统计和断线重连。
 - `perception.py`：滤波、迟滞、台面状态、边缘语义和 12 方向目标聚类。
 - `energy_vision.py`：摄像头视觉接口；黄绿色面积识别增益块，红色面积加 X 形状识别减益块。

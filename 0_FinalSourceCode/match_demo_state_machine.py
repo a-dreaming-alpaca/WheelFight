@@ -22,6 +22,9 @@ from perception import (
 from robot_config import DEFAULT_CONFIG, RobotConfig
 
 
+IR_SENSOR_COUNT = 12
+
+
 class RobotState(str, Enum):
     BOOT_SELF_CHECK = "BOOT_SELF_CHECK"
     WAIT_START_CLEAR = "WAIT_START_CLEAR"
@@ -93,12 +96,26 @@ class MatchController:
         config: RobotConfig = DEFAULT_CONFIG,
         clock=time.monotonic,
         wall_clock=time.time,
+        mega_port: Optional[str] = None,
     ) -> None:
+        rear_indices = config.sensors.rear_platform_ir_indices
+        if not rear_indices or any(
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            or not 0 <= index < IR_SENSOR_COUNT
+            for index in rear_indices
+        ):
+            raise ValueError(
+                "rear_platform_ir_indices must contain A0..A11 indices"
+            )
         self.config = config
         self.clock = clock
         self.wall_clock = wall_clock
         self.sensor_reader = sensor_reader or MegaSensorReader(
-            stale_after=config.timing.sensor_stop_after
+            port=mega_port,
+            stale_after=config.timing.sensor_stop_after,
+            read_timeout=config.timing.sensor_read_timeout,
+            reconnect_interval=config.timing.sensor_reconnect_interval,
         )
         self.motion_controller = motion_controller or MotionController(
             config=config.hardware
@@ -245,7 +262,11 @@ class MatchController:
             and now - self.match_start_time >= timing.match_duration
         ):
             if self.state != RobotState.MATCH_END:
-                self._transition(RobotState.MATCH_END, "120 second match end", now)
+                self._transition(
+                    RobotState.MATCH_END,
+                    f"{timing.match_duration:g} second match end",
+                    now,
+                )
             return DriveCommand(label="match-end-stop")
 
         if self.state in (RobotState.FAULT_STOP, RobotState.MATCH_END):
@@ -433,14 +454,24 @@ class MatchController:
 
     def _step_align_rear(self, p, vision, now) -> DriveCommand:
         target = p.cluster_nearest(180.0)
+        candidate_missing = target is None
+        if self._held(
+            "rear-candidate-missing",
+            candidate_missing,
+            self.config.timing.rear_candidate_lost_grace,
+            now,
+        ):
+            self._transition(RobotState.GROUND_SEARCH, "candidate lost", now)
+            return DriveCommand(label="rear-align-target-lost")
         if target is None:
-            if self._state_elapsed(now) > 0.30:
-                self._transition(RobotState.GROUND_SEARCH, "candidate lost", now)
             return DriveCommand(label="rear-align-target-lost")
 
         error = bearing_error(target.bearing_deg, 180.0)
         aligned = abs(error) <= self.config.sensors.alignment_tolerance_deg
-        rear_active = any(p.infrared_active[index] for index in (5, 6, 7))
+        rear_active = any(
+            p.infrared_active[index]
+            for index in self.config.sensors.rear_platform_ir_indices
+        )
         if self._held(
             "rear-aligned",
             aligned and rear_active,
@@ -463,7 +494,10 @@ class MatchController:
             self._transition(RobotState.FENCE_ESCAPE, "rear high object is fence", now)
             return DriveCommand(label="fence-confirmed-stop")
 
-        rear_active = any(p.infrared_active[index] for index in (5, 6, 7))
+        rear_active = any(
+            p.infrared_active[index]
+            for index in self.config.sensors.rear_platform_ir_indices
+        )
         if self._held(
             "low-platform",
             rear_active and not p.rear_high_object,
@@ -591,7 +625,7 @@ class MatchController:
         if self._held(
             "target-centered",
             centered,
-            0.08,
+            self.config.timing.target_center_confirm_time,
             now,
         ):
             self._transition(RobotState.TARGET_CLASSIFY, "front target centered", now)
@@ -605,7 +639,11 @@ class MatchController:
 
     def _step_target_classify(self, p, vision, now) -> DriveCommand:
         target = p.cluster_nearest(0.0)
-        if target is None or abs(target.bearing_deg) > 35.0:
+        if (
+            target is None
+            or abs(target.bearing_deg)
+            > self.config.sensors.target_classify_loss_bearing_deg
+        ):
             self._transition(RobotState.ARENA_SEARCH, "classification target lost", now)
             return DriveCommand(label="classify-target-lost")
         if (
@@ -683,7 +721,11 @@ class MatchController:
             return DriveCommand(label="attack-color-stop")
 
         target = p.cluster_nearest(0.0)
-        if target is not None and abs(target.bearing_deg) <= 65.0:
+        if (
+            target is not None
+            and abs(target.bearing_deg)
+            <= self.config.sensors.attack_target_max_bearing_deg
+        ):
             self._target_last_seen = now
             error = target.bearing_deg
         elif now - self._target_last_seen > self.config.timing.target_lost_grace:
@@ -895,7 +937,9 @@ class MatchController:
     def _apply_stuck_watchdog(
         self, command: DriveCommand, p: PerceptionSnapshot, now: float
     ) -> DriveCommand:
-        signature = p.feature_signature()
+        signature = p.feature_signature(
+            self.config.sensors.stuck_analog_bin_size
+        )
         moving = command.left_speed != 0 or command.right_speed != 0
         if signature != self._last_feature_signature:
             self._last_feature_signature = signature
@@ -1029,11 +1073,7 @@ Match_demo = MatchController
 
 
 def build_default_controller(mega_port: Optional[str] = None) -> MatchController:
-    reader = MegaSensorReader(
-        port=mega_port,
-        stale_after=DEFAULT_CONFIG.timing.sensor_stop_after,
-    )
-    return MatchController(sensor_reader=reader)
+    return MatchController(mega_port=mega_port)
 
 
 def parse_args() -> argparse.Namespace:

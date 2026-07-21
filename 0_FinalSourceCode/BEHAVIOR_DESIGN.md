@@ -265,10 +265,13 @@ Actions:
 
 - rotate using cluster bearing feedback;
 - reduce turn speed as the candidate approaches A6;
-- require rear-sector stability before stopping the turn.
+- require stability from the configured rear ranging sector (A5/A6/A7 by
+  default) before stopping the turn.
 
 Exit to `VERIFY_PLATFORM` when the rear ranging cluster is centered. If the
-cluster disappears, return to search.
+cluster disappears, wait for the configured `rear_candidate_lost_grace`
+before returning to search so a brief ranging dropout does not restart the
+whole search sequence.
 
 ### `VERIFY_PLATFORM`
 
@@ -389,6 +392,9 @@ Actions:
 
 - repeatedly select the cluster nearest the current A0 direction and rotate
   until that cluster is centered;
+- abandon the classification candidate if its bearing exceeds the configured
+  `target_classify_loss_bearing_deg`; otherwise return to `TARGET_ALIGN` when
+  it leaves the tighter centering tolerance;
 - keep enough standoff distance for the artwork colors to remain inside the
   fixed central ROI;
 - use A11/A0/A1 to refine alignment;
@@ -410,6 +416,8 @@ Actions:
 
 - lower/hold the shovel in attack position;
 - drive forward with steering correction from the target bearing;
+- only accept a tracking cluster inside the configured
+  `attack_target_max_bearing_deg` forward sector;
 - reduce speed if target confidence/ranging quality falls;
 - do not continue a blind charge after target loss beyond a short grace time;
 - abort immediately if the target is newly classified as harmful.
@@ -523,6 +531,8 @@ If the camera or detector is unavailable:
 If motion is commanded but ranging/grayscale features remain essentially
 unchanged for a calibrated interval:
 
+- quantize all filtered analog readings with `stuck_analog_bin_size` so small
+  ADC noise does not continually reset the watchdog;
 - stop the current action;
 - for a ground/climb action, enter the forward-then-right-turn
   `FENCE_ESCAPE` sequence;
@@ -535,8 +545,9 @@ well before 10 seconds.
 
 ### `MATCH_END`
 
-At 120 seconds from the legal start event, command drive motors to zero and
-hold the shovel safely. This terminal state ignores ordinary target events.
+At the configured `match_duration` (120 seconds by default) from the legal
+start event, command drive motors to zero and hold the shovel safely. This
+terminal state ignores ordinary target events.
 
 ## 11. Main control-loop contract
 
@@ -569,6 +580,15 @@ Keep these in a configuration file:
 - A12/A13 on/off thresholds, hysteresis, and gradient compensation;
 - DI0/DI1 edge assertion/clear timing;
 - DI2 fence confirmation timing and valid rear ranging window;
+- `rear_platform_ir_indices`: rear ranging channels used by alignment and
+  low-platform verification (A5/A6/A7 by default);
+- `rear_candidate_lost_grace`: brief rear-cluster dropout allowance;
+- `target_classify_loss_bearing_deg` and `attack_target_max_bearing_deg`:
+  maximum target bearings for classification and attack tracking;
+- `stuck_analog_bin_size`: analog feature quantization used by the stuck
+  watchdog;
+- `sensor_read_timeout` and `sensor_reconnect_interval`: Mega serial receive
+  and reconnect timing;
 - search, alignment, probe, climb, patrol, attack, push, and recovery speeds;
 - `avoid_turn_speed` and `avoid_turn_time`: tune together for approximately
   180 degrees of clockwise/right rotation;
@@ -582,7 +602,9 @@ Keep these in a configuration file:
 - post-climb clearance duration;
 - servo raised/lowered angles, speed, and settling time;
 - camera confidence, minimum target size, multi-frame vote count, and timeout;
-- target-loss grace time and stuck-watchdog thresholds.
+- `target_center_confirm_time`: zero-speed centered dwell before camera
+  classification starts;
+- target-loss grace time, `match_duration`, and stuck-watchdog timeout.
 
 ## 13. Implementation order and acceptance gates
 

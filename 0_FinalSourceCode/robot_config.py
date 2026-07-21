@@ -53,8 +53,17 @@ class SensorConfig:
     edge_clear_frames: int = 3
     rear_high_confirm_frames: int = 3
     platform_confirm_frames: int = 3
+    # Rear low-object sector used for platform alignment/verification.
+    rear_platform_ir_indices: tuple[int, ...] = (5, 6, 7)
     alignment_tolerance_deg: float = 18.0
     front_target_tolerance_deg: float = 20.0
+    # Outside the centering tolerance the classifier realigns; outside this
+    # wider limit it abandons the candidate entirely.
+    target_classify_loss_bearing_deg: float = 35.0
+    # Forward sector in which attack steering is allowed to follow a cluster.
+    attack_target_max_bearing_deg: float = 65.0
+    # ADC counts per feature bin for the no-motion/stuck watchdog.
+    stuck_analog_bin_size: int = 16
 
 
 @dataclass(frozen=True)
@@ -84,6 +93,10 @@ class TimingConfig:
     control_period: float = 0.02
     sensor_warning_after: float = 0.06
     sensor_stop_after: float = 0.10
+    # Mega receiver thread timing; separate from the controller's stale-data
+    # warning and emergency-stop thresholds above.
+    sensor_read_timeout: float = 0.10
+    sensor_reconnect_interval: float = 1.0
     camera_stale_after: float = 0.25
     status_publish_interval: float = 0.10
     match_duration: float = 120.0
@@ -96,6 +109,8 @@ class TimingConfig:
     shovel_settle_time: float = 0.60
 
     ground_candidate_confirm: float = 0.10
+    # Ignore a brief ranging dropout while turning a candidate toward A6.
+    rear_candidate_lost_grace: float = 0.30
     align_timeout: float = 4.0
     platform_verify_time: float = 0.12
     platform_probe_timeout: float = 0.60
@@ -107,6 +122,7 @@ class TimingConfig:
     climb_clear_stable_time: float = 0.20
     climb_clear_timeout: float = 1.20
 
+    target_center_confirm_time: float = 0.08
     target_align_timeout: float = 3.0
     target_classify_timeout: float = 0.80
     target_lost_grace: float = 0.25

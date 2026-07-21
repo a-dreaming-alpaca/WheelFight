@@ -76,6 +76,10 @@ compete for the same Mega serial port. The read-only `tk_monitor.py` is safe to
 run alongside the match controller because it only reads the controller's JSON
 status file.
 
+The match controller reads its serial read timeout and reconnect interval from
+`0_FinalSourceCode/robot_config.py`. The standalone `sensor_monitor.py` keeps
+the `MegaSensorReader` diagnostic defaults instead.
+
 An explicit port and CSV recording can also be selected:
 
 ```bash

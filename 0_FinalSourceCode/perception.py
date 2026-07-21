@@ -77,9 +77,15 @@ class PerceptionSnapshot:
             return None
         return max(self.clusters, key=lambda cluster: cluster.strength)
 
-    def feature_signature(self) -> tuple:
+    def feature_signature(
+        self,
+        analog_bin_size: int = DEFAULT_CONFIG.sensors.stuck_analog_bin_size,
+    ) -> tuple:
+        bin_size = max(1, int(analog_bin_size))
         return (
-            tuple(round(value / 16) for value in self.filtered_analog),
+            tuple(
+                round(value / bin_size) for value in self.filtered_analog
+            ),
             self.raw_digital,
             self.platform_state,
         )

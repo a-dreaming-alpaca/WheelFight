@@ -95,6 +95,7 @@ def test_config():
         platform_verify_time=0.01,
         climb_prepare_forward_time=0.04,
         climb_prepare_settle_time=0.06,
+        target_center_confirm_time=0.05,
         target_classify_timeout=0.20,
         fault_recover_time=0.01,
         match_duration=0.10,
@@ -115,7 +116,7 @@ def test_config():
 
 
 class ControllerHarness:
-    def __init__(self):
+    def __init__(self, config=None):
         self.clock = FakeClock()
         self.reader = FakeReader()
         self.motion = FakeMotion()
@@ -124,7 +125,7 @@ class ControllerHarness:
             sensor_reader=self.reader,
             motion_controller=self.motion,
             vision_detector=self.vision,
-            config=test_config(),
+            config=config or test_config(),
             clock=self.clock,
             wall_clock=self.clock,
         )
@@ -171,6 +172,53 @@ class ControllerHarness:
 
 
 class MatchControllerTests(unittest.TestCase):
+    def test_invalid_rear_ir_channel_config_fails_before_startup(self):
+        for rear_indices in ((), (12,), (-1,), ("6",)):
+            with self.subTest(rear_indices=rear_indices):
+                config = test_config()
+                sensors = replace(
+                    config.sensors,
+                    rear_platform_ir_indices=rear_indices,
+                )
+                clock = FakeClock()
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "rear_platform_ir_indices",
+                ):
+                    MatchController(
+                        sensor_reader=FakeReader(),
+                        motion_controller=FakeMotion(),
+                        vision_detector=FakeVision(clock),
+                        config=replace(config, sensors=sensors),
+                        clock=clock,
+                        wall_clock=clock,
+                    )
+
+    def test_default_reader_uses_configured_serial_timings(self):
+        config = test_config()
+        timing = replace(
+            config.timing,
+            sensor_stop_after=0.19,
+            sensor_read_timeout=0.037,
+            sensor_reconnect_interval=0.42,
+        )
+        config = replace(config, timing=timing)
+        clock = FakeClock()
+
+        controller = MatchController(
+            motion_controller=FakeMotion(),
+            vision_detector=FakeVision(clock),
+            config=config,
+            clock=clock,
+            wall_clock=clock,
+            mega_port="TEST_PORT",
+        )
+
+        self.assertEqual(controller.sensor_reader.port, "TEST_PORT")
+        self.assertEqual(controller.sensor_reader.stale_after, 0.19)
+        self.assertEqual(controller.sensor_reader.read_timeout, 0.037)
+        self.assertEqual(controller.sensor_reader.reconnect_interval, 0.42)
+
     def test_two_hand_press_and_release_generates_start_event(self):
         h = ControllerHarness()
         h.step()  # boot -> wait clear
@@ -223,6 +271,62 @@ class MatchControllerTests(unittest.TestCase):
         command = turning.step(ir={5: 300})
         self.assertNotEqual(command.left_speed, 0)
         self.assertEqual(command.left_speed, -command.right_speed)
+
+    def test_rear_candidate_loss_uses_configured_grace_time(self):
+        config = test_config()
+        timing = replace(config.timing, rear_candidate_lost_grace=0.07)
+        h = ControllerHarness(replace(config, timing=timing))
+        h.controller.state = RobotState.ALIGN_REAR
+        h.controller.state_entered = h.clock()
+
+        h.step(ir={5: 800})
+        h.clock.value = h.controller.state_entered + 0.50
+        h.step(ir={5: 800})
+        loss_started = h.clock()
+        command = h.step()
+        self.assertEqual(h.controller.state, RobotState.ALIGN_REAR)
+        self.assertEqual(command.label, "rear-align-target-lost")
+
+        h.clock.value = loss_started + timing.rear_candidate_lost_grace - 1e-6
+        command = h.step()
+        self.assertEqual(h.controller.state, RobotState.ALIGN_REAR)
+        self.assertEqual(command.label, "rear-align-target-lost")
+
+        h.clock.value = loss_started + timing.rear_candidate_lost_grace + 1e-6
+        command = h.step()
+        self.assertEqual(h.controller.state, RobotState.GROUND_SEARCH)
+        self.assertEqual(command.label, "rear-align-target-lost")
+
+    def test_platform_verification_uses_configured_rear_ir_channels(self):
+        config = test_config()
+        sensors = replace(config.sensors, rear_platform_ir_indices=(4,))
+        h = ControllerHarness(replace(config, sensors=sensors))
+        h.controller.state = RobotState.VERIFY_PLATFORM
+        h.controller.state_entered = h.clock()
+
+        h.step(ir={4: 800})
+        command = h.step(ir={4: 800})
+
+        self.assertEqual(h.controller.state, RobotState.CLIMB_PREPARE)
+        self.assertEqual(command.label, "platform-verified-stop")
+
+    def test_rear_alignment_uses_configured_rear_ir_channels(self):
+        config = test_config()
+        sensors = replace(
+            config.sensors,
+            rear_platform_ir_indices=(4,),
+            alignment_tolerance_deg=70.0,
+        )
+        h = ControllerHarness(replace(config, sensors=sensors))
+        h.controller.state = RobotState.ALIGN_REAR
+        h.controller.state_entered = h.clock()
+
+        command = h.step(ir={4: 800})
+        self.assertEqual(command.label, "rear-align-hold")
+        command = h.step(ir={4: 800})
+
+        self.assertEqual(h.controller.state, RobotState.VERIFY_PLATFORM)
+        self.assertEqual(command.label, "rear-aligned-stop")
 
     def test_climb_prepare_creates_runup_then_settles_before_reversing(self):
         h = ControllerHarness()
@@ -372,6 +476,8 @@ class MatchControllerTests(unittest.TestCase):
         h = ControllerHarness()
         h.controller.state = RobotState.TARGET_ALIGN
         h.controller.state_entered = h.clock()
+        hold_started = h.clock()
+        confirm_time = h.controller.config.timing.target_center_confirm_time
 
         command = h.step(ir={0: 300}, gray=(700, 700))
 
@@ -379,12 +485,68 @@ class MatchControllerTests(unittest.TestCase):
         self.assertEqual((command.left_speed, command.right_speed), (0, 0))
         self.assertEqual(command.label, "target-align-hold")
 
-        h.clock.advance(0.08)
+        h.clock.value = hold_started + confirm_time - 1e-6
+        command = h.step(ir={0: 300}, gray=(700, 700))
+
+        self.assertEqual(h.controller.state, RobotState.TARGET_ALIGN)
+        self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+        self.assertEqual(command.label, "target-align-hold")
+
+        h.clock.value = hold_started + confirm_time + 1e-6
         command = h.step(ir={0: 300}, gray=(700, 700))
 
         self.assertEqual(h.controller.state, RobotState.TARGET_CLASSIFY)
         self.assertEqual((command.left_speed, command.right_speed), (0, 0))
         self.assertEqual(command.label, "target-centered-stop")
+
+    def test_classification_loss_angle_uses_configured_limit(self):
+        config = test_config()
+        sensors = replace(
+            config.sensors,
+            target_classify_loss_bearing_deg=70.0,
+        )
+        h = ControllerHarness(replace(config, sensors=sensors))
+        h.controller.state = RobotState.TARGET_CLASSIFY
+        h.controller.state_entered = h.clock()
+
+        command = h.step(ir={2: 800}, gray=(700, 700))
+
+        self.assertEqual(h.controller.state, RobotState.TARGET_ALIGN)
+        self.assertEqual(command.label, "classify-realign-stop")
+
+    def test_attack_tracking_angle_uses_configured_limit(self):
+        config = test_config()
+        sensors = replace(config.sensors, attack_target_max_bearing_deg=45.0)
+        h = ControllerHarness(replace(config, sensors=sensors))
+        h.controller.state = RobotState.ATTACK_ENEMY
+        h.controller.state_entered = h.clock()
+        h.controller._target_last_seen = (
+            h.clock() - config.timing.target_lost_grace - 0.01
+        )
+
+        command = h.step(ir={2: 800}, gray=(700, 700))
+
+        self.assertEqual(h.controller.state, RobotState.ARENA_SEARCH)
+        self.assertEqual(command.label, "attack-target-lost-stop")
+
+    def test_stuck_watchdog_uses_configured_analog_bin_size(self):
+        config = test_config()
+        sensors = replace(config.sensors, stuck_analog_bin_size=100)
+        timing = replace(config.timing, stuck_timeout=0.05)
+        h = ControllerHarness(
+            replace(config, sensors=sensors, timing=timing)
+        )
+        h.controller.state = RobotState.ATTACK_ENEMY
+        h.controller.state_entered = h.clock()
+
+        h.step(ir={0: 300}, gray=(700, 700))
+        h.clock.value = (
+            h.controller._feature_changed_at + timing.stuck_timeout + 1e-6
+        )
+        command = h.step(ir={0: 340}, gray=(700, 700))
+
+        self.assertEqual(h.controller.state, RobotState.AVOID_BLOCK)
+        self.assertEqual(command.label, "stuck-watchdog-stop")
 
     def test_stale_sensor_stops_motion_and_enters_fault(self):
         h = ControllerHarness()
@@ -406,6 +568,10 @@ class MatchControllerTests(unittest.TestCase):
         command = h.step(gray=(700, 700))
         self.assertEqual(h.controller.state, RobotState.MATCH_END)
         self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+        self.assertEqual(
+            h.controller.state_reason,
+            f"{h.controller.config.timing.match_duration:g} second match end",
+        )
 
     def test_edge_immediately_preempts_enemy_attack(self):
         h = ControllerHarness()
