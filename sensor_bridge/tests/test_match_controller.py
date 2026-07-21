@@ -138,6 +138,7 @@ class ControllerHarness:
         gray=(100, 100),
         digital=(0, 0, 1),
         vision=None,
+        vision_confidence=1.0,
         received_age=0.0,
     ):
         # The first ranging calibration measured an unobstructed IR value near 0.
@@ -149,10 +150,10 @@ class ControllerHarness:
         if vision is not None:
             self.vision.result = VisionResult(
                 classification=vision,
-                confidence=1.0,
+                confidence=vision_confidence,
                 center_x=320.0,
                 bbox_width=80.0,
-                tag_id=2 if vision == EnergyClass.HARMFUL else None,
+                tag_id=None,
                 timestamp=self.clock(),
                 frame_width=640,
             )
@@ -532,7 +533,7 @@ class MatchControllerTests(unittest.TestCase):
         self.assertEqual(h.controller.state, RobotState.FENCE_ESCAPE)
         self.assertEqual(command.label, "climb-fence-stop")
 
-    def test_harmful_tag_is_avoided_after_multiple_votes(self):
+    def test_harmful_color_is_avoided_after_multiple_votes(self):
         h = ControllerHarness()
         h.controller.state = RobotState.TARGET_CLASSIFY
         h.controller.state_entered = h.clock()
@@ -542,27 +543,29 @@ class MatchControllerTests(unittest.TestCase):
         h.step(ir={0: 800}, gray=(700, 700), vision=EnergyClass.HARMFUL)
         self.assertEqual(h.controller.state, RobotState.AVOID_BLOCK)
 
-    def test_harmful_target_on_either_side_still_uses_fixed_right_avoidance(self):
+    def test_harmful_votes_must_be_consecutive(self):
+        h = ControllerHarness()
+        h.controller.state = RobotState.TARGET_CLASSIFY
+        h.controller.state_entered = h.clock()
+
+        h.step(ir={0: 800}, gray=(700, 700), vision=EnergyClass.HARMFUL)
+        h.step(ir={0: 800}, gray=(700, 700), vision=EnergyClass.UNKNOWN)
+        h.step(ir={0: 800}, gray=(700, 700), vision=EnergyClass.HARMFUL)
+        self.assertEqual(h.controller.state, RobotState.TARGET_CLASSIFY)
+
+        h.step(ir={0: 800}, gray=(700, 700), vision=EnergyClass.HARMFUL)
+        self.assertEqual(h.controller.state, RobotState.AVOID_BLOCK)
+
+    def test_fixed_right_avoidance_ignores_rejected_target_side(self):
         for sensor_index in (1, 11):
             with self.subTest(sensor_index=sensor_index):
                 h = ControllerHarness()
-                h.controller.state = RobotState.TARGET_CLASSIFY
+                h.controller.state = RobotState.AVOID_BLOCK
                 h.controller.state_entered = h.clock()
 
-                h.step(
-                    ir={sensor_index: 800},
-                    gray=(700, 700),
-                    vision=EnergyClass.HARMFUL,
-                )
-                h.step(
-                    ir={sensor_index: 800},
-                    gray=(700, 700),
-                    vision=EnergyClass.HARMFUL,
-                )
                 command = h.step(
                     ir={sensor_index: 800},
                     gray=(700, 700),
-                    vision=EnergyClass.HARMFUL,
                 )
 
                 speed = h.controller.config.motion.avoid_turn_speed
@@ -624,7 +627,7 @@ class MatchControllerTests(unittest.TestCase):
         self.assertEqual((command.left_speed, command.right_speed), (0, 0))
         self.assertEqual(command.label, "edge-stop")
 
-    def test_gain_tag_enters_push_after_multiple_votes(self):
+    def test_gain_color_enters_push_after_multiple_votes(self):
         h = ControllerHarness()
         h.controller.state = RobotState.TARGET_CLASSIFY
         h.controller.state_entered = h.clock()
@@ -644,6 +647,26 @@ class MatchControllerTests(unittest.TestCase):
         h.step(ir={0: 800}, gray=(700, 700), vision=EnergyClass.NO_BLOCK_MARKER)
         self.assertEqual(h.controller.state, RobotState.ATTACK_ENEMY)
 
+    def test_classification_realigns_before_voting_when_target_drifts(self):
+        for sensor_index in (1, 11):
+            with self.subTest(sensor_index=sensor_index):
+                h = ControllerHarness()
+                h.controller.state = RobotState.TARGET_CLASSIFY
+                h.controller.state_entered = h.clock()
+
+                command = h.step(
+                    ir={sensor_index: 800},
+                    gray=(700, 700),
+                    vision=EnergyClass.NO_BLOCK_MARKER,
+                )
+
+                self.assertEqual(h.controller.state, RobotState.TARGET_ALIGN)
+                self.assertEqual(command.label, "classify-realign-stop")
+                self.assertEqual(
+                    h.controller._vision_votes[EnergyClass.NO_BLOCK_MARKER],
+                    0,
+                )
+
     def test_far_no_marker_target_is_not_assumed_to_be_enemy(self):
         h = ControllerHarness()
         h.controller.state = RobotState.TARGET_CLASSIFY
@@ -652,6 +675,26 @@ class MatchControllerTests(unittest.TestCase):
         h.controller.match_start_time = h.clock()
         h.step(ir={0: 300}, gray=(700, 700), vision=EnergyClass.NO_BLOCK_MARKER)
         h.step(ir={0: 300}, gray=(700, 700), vision=EnergyClass.NO_BLOCK_MARKER)
+        self.assertEqual(h.controller.state, RobotState.TARGET_CLASSIFY)
+
+    def test_low_confidence_no_marker_result_is_not_assumed_to_be_enemy(self):
+        h = ControllerHarness()
+        h.controller.state = RobotState.TARGET_CLASSIFY
+        h.controller.state_entered = h.clock()
+        h.controller.match_started = True
+        h.controller.match_start_time = h.clock()
+        h.step(
+            ir={0: 800},
+            gray=(700, 700),
+            vision=EnergyClass.NO_BLOCK_MARKER,
+            vision_confidence=0.10,
+        )
+        h.step(
+            ir={0: 800},
+            gray=(700, 700),
+            vision=EnergyClass.NO_BLOCK_MARKER,
+            vision_confidence=0.10,
+        )
         self.assertEqual(h.controller.state, RobotState.TARGET_CLASSIFY)
 
 

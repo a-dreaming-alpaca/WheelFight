@@ -113,22 +113,45 @@ The state machine consumes a backend-independent result:
 ```text
 type: GAIN | HARMFUL | NO_BLOCK_MARKER | UNKNOWN | NONE
 confidence: 0.0 .. 1.0
-center_x: image coordinate
-bbox_width: apparent target width
+gain_color_ratio: yellow-green pixel share inside the ROI
+harmful_color_ratio: red pixel share inside the ROI
+red_x_score: normalized red-X geometry score
+red_x_detected: whether the red-X score reaches its threshold
 timestamp: monotonic time
 ```
 
-For local development, AprilTag supplies these results. When official artwork
-is released, only the detector backend and configuration should change.
+The color detector converts a fixed central camera ROI to HSV and measures the
+configured target colors. Its deliberately simple classification rules are:
+
+- yellow-green reaches the configured area threshold -> `GAIN`;
+- red reaches the area threshold and forms a clear X -> `HARMFUL`;
+- neither complete marker is present -> `NO_BLOCK_MARKER`;
+- yellow-green and a valid red X are both present -> `UNKNOWN`.
+
+Each connected red candidate is normalized to a small grid. Its X score
+requires red coverage in all four diagonal arms and the crossing center, then
+penalizes red coverage outside the diagonals; the highest valid candidate score is used. A
+red rectangular arena marking or a solid red patch therefore does not satisfy
+the harmful-block rule, even if it appears beside a separate red X. Gain
+recognition remains a color-only decision.
+
+A `NO_BLOCK_MARKER` frame is counted as enemy evidence only when its confidence
+also reaches the configured minimum. A clear high-fill arena marking produces
+strong non-X evidence, while a nearly-X-shaped but incomplete red target stays
+low confidence and is treated as `UNKNOWN` by the voting state.
+
+The state machine requires consecutive, consistent fresh-frame votes before
+acting on these per-frame results. An unknown or conflicting frame resets the
+current classification streak.
 
 `NO_BLOCK_MARKER` can be used as enemy evidence only when:
 
-- the ranging target is centered in a valid camera region;
-- its apparent size is sufficient for marker recognition;
-- the camera is healthy;
-- several consecutive good frames contain no energy-block marker.
+- the ranging target is centered so its artwork falls inside the fixed ROI;
+- the target is close enough for the configured color-area threshold;
+- the camera and ROI are valid;
+- the required number of consecutive fresh frames vote `NO_BLOCK_MARKER`.
 
-An absent marker in a poor image is `UNKNOWN`, not an enemy.
+A camera failure or invalid frame is `UNKNOWN`, not `NO_BLOCK_MARKER`.
 
 ## 4. Behavior architecture
 
@@ -360,7 +383,8 @@ Actions:
 
 - repeatedly select the cluster nearest the current A0 direction and rotate
   until that cluster is centered;
-- keep enough standoff distance for the camera to see the marker;
+- keep enough standoff distance for the artwork colors to remain inside the
+  fixed central ROI;
 - use A11/A0/A1 to refine alignment;
 - collect multiple fresh camera results.
 
@@ -372,7 +396,7 @@ Decision:
 - `UNKNOWN`, stale, off-center, or inconsistent -> reposition and retry;
 - target lost -> `ARENA_SEARCH`.
 
-The robot must never interpret a single missing tag as an enemy.
+The robot must never interpret a single `NO_BLOCK_MARKER` result as an enemy.
 
 ### `ATTACK_ENEMY`
 
@@ -483,7 +507,7 @@ and the recovery policy explicitly permits resuming.
 If the camera or detector is unavailable:
 
 - disable gain-block pursuit and block-pushing states;
-- do not classify one missing tag as an enemy;
+- do not classify one missing-color result as an enemy;
 - continue edge-safe moving search to avoid passive-play behavior;
 - attack only if a later calibrated IR-only enemy-confidence rule is available;
   otherwise remain mobile and avoid unresolved close objects.
@@ -568,7 +592,7 @@ previous gate passes:
 7. Low-speed platform probe, forward run-up preparation, then full-speed climb
    and interior clearance.
 8. On-platform moving search and target alignment.
-9. Camera adapter with temporary AprilTags and recorded-video replay.
+9. Central-ROI HSV color detector with recorded-video replay.
 10. Harmful/unknown avoidance.
 11. Gain-block push with edge preemption.
 12. Enemy attack with target-loss and edge/fall recovery.

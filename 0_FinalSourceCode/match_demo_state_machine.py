@@ -10,7 +10,7 @@ from collections import Counter
 from enum import Enum
 from typing import Optional
 
-from energy_vision import AprilTagEnergyDetector, EnergyClass, VisionResult
+from energy_vision import ColorEnergyDetector, EnergyClass, VisionResult
 from mega_sensor_reader import MegaSensorReader
 from motion_controller import DriveCommand, MotionController
 from perception import (
@@ -103,7 +103,7 @@ class MatchController:
         self.motion_controller = motion_controller or MotionController(
             config=config.hardware
         )
-        self.vision_detector = vision_detector or AprilTagEnergyDetector(
+        self.vision_detector = vision_detector or ColorEnergyDetector(
             config=config.vision, clock=clock
         )
         self.perception = PerceptionEngine(config.sensors)
@@ -608,6 +608,16 @@ class MatchController:
         if target is None or abs(target.bearing_deg) > 35.0:
             self._transition(RobotState.ARENA_SEARCH, "classification target lost", now)
             return DriveCommand(label="classify-target-lost")
+        if (
+            abs(target.bearing_deg)
+            > self.config.sensors.front_target_tolerance_deg
+        ):
+            self._transition(
+                RobotState.TARGET_ALIGN,
+                "target drifted outside vision center",
+                now,
+            )
+            return DriveCommand(label="classify-realign-stop")
 
         if vision.is_fresh(now, self.config.timing.camera_stale_after):
             if vision.timestamp != self._last_vision_vote_timestamp:
@@ -615,22 +625,36 @@ class MatchController:
                 vote = vision.classification
                 if (
                     vote in (EnergyClass.GAIN, EnergyClass.HARMFUL)
-                    and vision.confidence < self.config.vision.min_tag_confidence
+                    and vision.confidence < self.config.vision.min_color_confidence
                 ):
                     vote = EnergyClass.UNKNOWN
                 if (
                     vote == EnergyClass.NO_BLOCK_MARKER
-                    and not self._good_no_marker_view(target)
+                    and (
+                        vision.confidence
+                        < self.config.vision.min_color_confidence
+                        or not self._good_no_marker_view(target)
+                    )
                 ):
                     vote = EnergyClass.UNKNOWN
-                self._vision_votes[vote] += 1
+                accepted_votes = (
+                    EnergyClass.GAIN,
+                    EnergyClass.HARMFUL,
+                    EnergyClass.NO_BLOCK_MARKER,
+                )
+                if vote in accepted_votes:
+                    consecutive_count = self._vision_votes[vote] + 1
+                    self._vision_votes.clear()
+                    self._vision_votes[vote] = consecutive_count
+                else:
+                    self._vision_votes.clear()
 
         required = self.config.vision.classify_votes
         if self._vision_votes[EnergyClass.HARMFUL] >= required:
-            self._transition(RobotState.AVOID_BLOCK, "harmful tag confirmed", now)
+            self._transition(RobotState.AVOID_BLOCK, "harmful red X confirmed", now)
             return DriveCommand(label="harmful-confirmed-stop")
         if self._vision_votes[EnergyClass.GAIN] >= required:
-            self._transition(RobotState.PUSH_GAIN_BLOCK, "gain tag confirmed", now)
+            self._transition(RobotState.PUSH_GAIN_BLOCK, "gain color confirmed", now)
             return DriveCommand(label="gain-confirmed-stop")
         if (
             self._vision_votes[EnergyClass.NO_BLOCK_MARKER]
@@ -638,7 +662,9 @@ class MatchController:
         ):
             self._target_last_seen = now
             self._transition(
-                RobotState.ATTACK_ENEMY, "good-view frames contain no block marker", now
+                RobotState.ATTACK_ENEMY,
+                "good-view frames contain no complete energy-block marker",
+                now,
             )
             return DriveCommand(label="enemy-confirmed-stop")
         if self._state_elapsed(now) > self.config.timing.target_classify_timeout:
@@ -648,13 +674,13 @@ class MatchController:
 
     def _step_attack_enemy(self, p, vision, now) -> DriveCommand:
         if self._fresh_class(vision, EnergyClass.HARMFUL, now):
-            self._transition(RobotState.AVOID_BLOCK, "harmful tag during attack", now)
+            self._transition(RobotState.AVOID_BLOCK, "harmful red X during attack", now)
             return DriveCommand(label="attack-harmful-stop")
         if self._fresh_class(vision, EnergyClass.GAIN, now):
             self._transition(
-                RobotState.TARGET_CLASSIFY, "tag appeared during attack", now
+                RobotState.TARGET_CLASSIFY, "energy-block color appeared during attack", now
             )
-            return DriveCommand(label="attack-tag-stop")
+            return DriveCommand(label="attack-color-stop")
 
         target = p.cluster_nearest(0.0)
         if target is not None and abs(target.bearing_deg) <= 65.0:
@@ -675,7 +701,7 @@ class MatchController:
 
     def _step_push_gain(self, p, vision, now) -> DriveCommand:
         if self._fresh_class(vision, EnergyClass.HARMFUL, now):
-            self._transition(RobotState.AVOID_BLOCK, "harmful reclassification", now)
+            self._transition(RobotState.AVOID_BLOCK, "harmful red X reclassification", now)
             return DriveCommand(label="push-harmful-stop")
         if not vision.is_fresh(now, self.config.timing.camera_stale_after):
             self._transition(RobotState.AVOID_BLOCK, "camera stale while pushing", now)
@@ -856,7 +882,7 @@ class MatchController:
     ) -> bool:
         return (
             vision.classification == classification
-            and vision.confidence >= self.config.vision.min_tag_confidence
+            and vision.confidence >= self.config.vision.min_color_confidence
             and vision.is_fresh(now, self.config.timing.camera_stale_after)
         )
 
@@ -942,7 +968,10 @@ class MatchController:
             "vision": {
                 "classification": vision.classification.value,
                 "confidence": vision.confidence,
-                "tag_id": vision.tag_id,
+                "gain_color_ratio": vision.gain_color_ratio,
+                "harmful_color_ratio": vision.harmful_color_ratio,
+                "red_x_score": vision.red_x_score,
+                "red_x_detected": vision.red_x_detected,
                 "age": max(0.0, self.clock() - vision.timestamp),
                 "error": vision.error,
             },

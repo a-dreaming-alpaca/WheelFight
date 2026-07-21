@@ -1,15 +1,18 @@
-"""Replaceable forward energy-block vision interface."""
+"""Forward energy-block recognition using HSV color and a red-X score."""
 
 from __future__ import annotations
 
-import math
 import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from robot_config import DEFAULT_CONFIG, VisionConfig
+
+
+RED_X_GRID_SIZE = 48
+CAMERA_PROBE_READS = 5
 
 
 class EnergyClass(str, Enum):
@@ -24,12 +27,18 @@ class EnergyClass(str, Enum):
 class VisionResult:
     classification: EnergyClass
     confidence: float
+    # Retained as compatibility placeholders for existing callers. The fixed
+    # ROI color backend does not estimate target geometry or an identifier.
     center_x: Optional[float]
     bbox_width: Optional[float]
     tag_id: Optional[int]
     timestamp: float
     frame_width: Optional[int] = None
     error: str = ""
+    gain_color_ratio: float = 0.0
+    harmful_color_ratio: float = 0.0
+    red_x_score: float = 0.0
+    red_x_detected: bool = False
 
     def is_fresh(self, now: float, stale_after: float) -> bool:
         return now - self.timestamp <= stale_after
@@ -46,8 +55,77 @@ class VisionResult:
         )
 
 
-class AprilTagEnergyDetector:
-    """Temporary AprilTag backend; final artwork can replace this class."""
+@dataclass(frozen=True)
+class RedXEvidence:
+    """Normalized red-X geometry evidence for one candidate region."""
+
+    score: float = 0.0
+    detected: bool = False
+    diag_down_fill: float = 0.0
+    diag_up_fill: float = 0.0
+    center_fill: float = 0.0
+    off_diag_fill: float = 0.0
+    arm_fills: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    candidate_box: Optional[tuple[int, int, int, int]] = None
+
+
+@dataclass(frozen=True)
+class ColorFrameAnalysis:
+    """One frame's result plus the exact ROI masks used to produce it."""
+
+    result: VisionResult
+    roi_bounds: tuple[int, int, int, int]
+    gain_mask: Optional[Any]
+    harmful_mask: Optional[Any]
+    red_x_evidence: RedXEvidence
+
+
+def open_first_usable_camera(
+    cv2,
+    config: VisionConfig,
+    probe_reads: int = CAMERA_PROBE_READS,
+    stop_event: Optional[threading.Event] = None,
+):
+    """Open the first configured camera that can also provide a real frame."""
+
+    reads_per_camera = max(1, int(probe_reads))
+    for camera_index in config.camera_indices:
+        if stop_event is not None and stop_event.is_set():
+            break
+        capture = None
+        selected = False
+        try:
+            capture = cv2.VideoCapture(camera_index)
+            if not capture.isOpened():
+                continue
+            capture.set(cv2.CAP_PROP_FRAME_WIDTH, config.frame_width)
+            capture.set(cv2.CAP_PROP_FRAME_HEIGHT, config.frame_height)
+            for _ in range(reads_per_camera):
+                if stop_event is not None and stop_event.is_set():
+                    break
+                ok, frame = capture.read()
+                if ok and frame is not None:
+                    selected = True
+                    return capture, camera_index, frame
+        except Exception:
+            pass
+        finally:
+            if capture is not None and not selected:
+                try:
+                    capture.release()
+                except Exception:
+                    pass
+
+    if stop_event is not None and stop_event.is_set():
+        raise RuntimeError("Camera probing stopped")
+    indices = ", ".join(str(index) for index in config.camera_indices)
+    raise RuntimeError(
+        f"No configured camera could provide a frame: {indices}"
+    )
+
+
+class ColorEnergyDetector:
+    """Classify yellow-green gain markers and red-X harmful markers."""
 
     def __init__(
         self,
@@ -93,62 +171,61 @@ class AprilTagEnergyDetector:
                 "last_error": self._last_error,
                 "classification": self._latest.classification.value,
                 "confidence": self._latest.confidence,
-                "tag_id": self._latest.tag_id,
+                "gain_color_ratio": self._latest.gain_color_ratio,
+                "harmful_color_ratio": self._latest.harmful_color_ratio,
+                "red_x_score": self._latest.red_x_score,
+                "red_x_detected": self._latest.red_x_detected,
                 "timestamp": self._latest.timestamp,
             }
 
     @staticmethod
     def _load_dependencies():
         try:
-            import apriltag
             import cv2
         except ImportError as exc:
-            raise RuntimeError(
-                "OpenCV and apriltag are required for the temporary vision backend"
-            ) from exc
-        return cv2, apriltag
+            raise RuntimeError("OpenCV is required for color vision") from exc
+        return cv2
 
     def _run(self) -> None:
-        cv2, apriltag = self._load_dependencies()
-        options = apriltag.DetectorOptions(families=self.config.tag_family)
-        detector = apriltag.Detector(options)
+        cv2 = self._load_dependencies()
 
         while not self._stop_event.is_set():
-            capture = None
-            selected_index = None
-            for camera_index in self.config.camera_indices:
-                candidate = cv2.VideoCapture(camera_index)
-                if candidate.isOpened():
-                    capture = candidate
-                    selected_index = camera_index
+            try:
+                capture, selected_index, first_frame = open_first_usable_camera(
+                    cv2,
+                    self.config,
+                    stop_event=self._stop_event,
+                )
+            except RuntimeError as exc:
+                if self._stop_event.is_set():
                     break
-                candidate.release()
-
-            if capture is None:
-                self._set_error("no configured camera could be opened")
+                self._set_error(str(exc))
                 self._stop_event.wait(self.config.reconnect_interval)
                 continue
 
-            capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.frame_width)
-            capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.frame_height)
             with self._lock:
                 self._active_camera = selected_index
-                self._healthy = True
+                self._healthy = False
                 self._last_error = ""
 
             try:
                 while not self._stop_event.is_set():
-                    ok, frame = capture.read()
+                    if first_frame is not None:
+                        frame = first_frame
+                        first_frame = None
+                        ok = True
+                    else:
+                        ok, frame = capture.read()
                     if not ok or frame is None:
                         raise RuntimeError("camera frame read failed")
-                    result = self._detect_frame(frame, detector, cv2)
+                    result = self._detect_frame(frame, cv2)
                     with self._lock:
                         self._latest = result
                         self._healthy = True
                         self._last_error = ""
 
                     if self.config.show_debug_window:
-                        cv2.imshow("WheelFight energy vision", frame)
+                        cv2.imshow("WheelFight energy color vision", frame)
                         if cv2.waitKey(1) & 0xFF == ord("q"):
                             self._stop_event.set()
                             break
@@ -168,61 +245,275 @@ class AprilTagEnergyDetector:
             except Exception:
                 pass
 
-    def _detect_frame(self, frame, detector, cv2) -> VisionResult:
+    def analyze_frame(self, frame, cv2) -> ColorFrameAnalysis:
+        """Analyze one BGR frame without opening a camera or starting a thread."""
+
         now = self._clock()
         height, width = frame.shape[:2]
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        tags = detector.detect(gray)
-        candidates = []
-        for tag in tags:
-            corners = tag.corners
-            center_x = float(sum(float(corner[0]) for corner in corners) / 4.0)
-            normalized_center = center_x / max(1.0, float(width))
-            if not (
-                self.config.center_region_min
-                <= normalized_center
-                <= self.config.center_region_max
-            ):
-                continue
-            top_width = math.dist(corners[0], corners[1])
-            bottom_width = math.dist(corners[3], corners[2])
-            bbox_width = (top_width + bottom_width) / 2.0
-            if bbox_width < self.config.min_tag_width_px:
-                continue
-            center_penalty = abs(normalized_center - 0.5)
-            candidates.append((center_penalty, -bbox_width, tag, center_x, bbox_width))
+        roi_bounds = self._roi_bounds(width, height)
+        x0, x1, y0, y1 = roi_bounds
+        if x1 <= x0 or y1 <= y0:
+            return ColorFrameAnalysis(
+                result=VisionResult(
+                    classification=EnergyClass.UNKNOWN,
+                    confidence=0.0,
+                    center_x=None,
+                    bbox_width=None,
+                    tag_id=None,
+                    timestamp=now,
+                    frame_width=width,
+                    error="invalid color vision ROI",
+                ),
+                roi_bounds=roi_bounds,
+                gain_mask=None,
+                harmful_mask=None,
+                red_x_evidence=RedXEvidence(),
+            )
 
-        if not candidates:
-            return VisionResult(
-                classification=EnergyClass.NO_BLOCK_MARKER,
-                confidence=1.0,
+        roi = frame[y0:y1, x0:x1]
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        config = self.config
+        lower_common = (config.min_saturation, config.min_value)
+
+        gain_mask = cv2.inRange(
+            hsv,
+            (config.yellow_green_h_min, *lower_common),
+            (config.yellow_green_h_max, 255, 255),
+        )
+        red_low_mask = cv2.inRange(
+            hsv,
+            (config.red_h_low_min, *lower_common),
+            (config.red_h_low_max, 255, 255),
+        )
+        red_high_mask = cv2.inRange(
+            hsv,
+            (config.red_h_high_min, *lower_common),
+            (config.red_h_high_max, 255, 255),
+        )
+        harmful_mask = cv2.bitwise_or(red_low_mask, red_high_mask)
+
+        roi_pixels = max(1, (x1 - x0) * (y1 - y0))
+        gain_ratio = cv2.countNonZero(gain_mask) / float(roi_pixels)
+        harmful_ratio = cv2.countNonZero(harmful_mask) / float(roi_pixels)
+        red_x_evidence = self._analyze_red_x(harmful_mask, cv2)
+        classification, confidence = self._classify_evidence(
+            gain_ratio,
+            harmful_ratio,
+            red_x_evidence.score,
+            red_x_evidence.off_diag_fill,
+            config.min_color_area_ratio,
+            config.min_red_x_score,
+        )
+
+        return ColorFrameAnalysis(
+            result=VisionResult(
+                classification=classification,
+                confidence=confidence,
                 center_x=None,
                 bbox_width=None,
                 tag_id=None,
                 timestamp=now,
                 frame_width=width,
+                gain_color_ratio=gain_ratio,
+                harmful_color_ratio=harmful_ratio,
+                red_x_score=red_x_evidence.score,
+                red_x_detected=red_x_evidence.detected,
+            ),
+            roi_bounds=roi_bounds,
+            gain_mask=gain_mask,
+            harmful_mask=harmful_mask,
+            red_x_evidence=red_x_evidence,
+        )
+
+    def _detect_frame(self, frame, cv2) -> VisionResult:
+        return self.analyze_frame(frame, cv2).result
+
+    def _roi_bounds(self, width: int, height: int) -> tuple[int, int, int, int]:
+        x0 = max(0, min(width, round(width * self.config.roi_x_min)))
+        x1 = max(0, min(width, round(width * self.config.roi_x_max)))
+        y0 = max(0, min(height, round(height * self.config.roi_y_min)))
+        y1 = max(0, min(height, round(height * self.config.roi_y_max)))
+        return x0, x1, y0, y1
+
+    def _analyze_red_x(self, harmful_mask, cv2) -> RedXEvidence:
+        contour_result = cv2.findContours(
+            harmful_mask.copy(),
+            cv2.RETR_CCOMP,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+        contours = contour_result[-2]
+        hierarchy = contour_result[-1]
+        if not contours:
+            return RedXEvidence()
+
+        mask_height, mask_width = harmful_mask.shape[:2]
+        minimum_pixels = (
+            mask_width * mask_height * self.config.min_color_area_ratio
+        )
+        best_evidence = RedXEvidence()
+        best_key = (-1.0, -1)
+
+        for contour_index, contour in enumerate(contours):
+            # RETR_CCOMP keeps foreground components at the top level and
+            # reports holes (for example the white strokes in a red arena
+            # marking) as children. Only real red foreground is a candidate.
+            if (
+                hierarchy is not None
+                and int(hierarchy[0][contour_index][3]) >= 0
+            ):
+                continue
+            x, y, width, height = cv2.boundingRect(contour)
+            if width <= 0 or height <= 0:
+                continue
+
+            # Isolate this contour so a surrounding red frame or a nearby red
+            # marking cannot leak into the candidate's bounding rectangle.
+            candidate_mask = harmful_mask.copy()
+            candidate_mask.fill(0)
+            cv2.drawContours(candidate_mask, [contour], -1, 255, -1)
+            candidate = candidate_mask[y : y + height, x : x + width]
+            candidate_pixels = cv2.countNonZero(candidate)
+            if candidate_pixels < minimum_pixels:
+                continue
+
+            normalized = cv2.resize(
+                candidate,
+                (RED_X_GRID_SIZE, RED_X_GRID_SIZE),
+                interpolation=cv2.INTER_NEAREST,
+            )
+            fills = self._red_x_grid_fills(
+                normalized.tobytes(),
+                RED_X_GRID_SIZE,
+                self.config.red_x_diagonal_band_ratio,
+                self.config.red_x_center_size_ratio,
+            )
+            diag_down_fill, diag_up_fill, center_fill, off_diag_fill = fills[:4]
+            arm_fills = fills[4:8]
+            score = self._red_x_score_from_fills(fills)
+            evidence = RedXEvidence(
+                score=score,
+                detected=score >= self.config.min_red_x_score,
+                diag_down_fill=diag_down_fill,
+                diag_up_fill=diag_up_fill,
+                center_fill=center_fill,
+                off_diag_fill=off_diag_fill,
+                arm_fills=arm_fills,
+                candidate_box=(x, y, width, height),
+            )
+            candidate_key = (score, candidate_pixels)
+            if candidate_key > best_key:
+                best_evidence = evidence
+                best_key = candidate_key
+
+        return best_evidence
+
+    @staticmethod
+    def _red_x_grid_fills(
+        grid_bytes: bytes,
+        grid_size: int,
+        diagonal_band_ratio: float,
+        center_size_ratio: float,
+    ) -> tuple[float, ...]:
+        if grid_size <= 0 or len(grid_bytes) < grid_size * grid_size:
+            return (0.0,) * 8
+
+        band = max(0.0, min(0.49, diagonal_band_ratio))
+        center_half = max(0.0, min(0.5, center_size_ratio / 2.0))
+        red_counts = [0] * 8
+        total_counts = [0] * 8
+
+        for row in range(grid_size):
+            v = (row + 0.5) / grid_size
+            for column in range(grid_size):
+                u = (column + 0.5) / grid_size
+                red = grid_bytes[row * grid_size + column] != 0
+                diag_down = abs(u - v) <= band
+                diag_up = abs(u + v - 1.0) <= band
+                center = (
+                    abs(u - 0.5) <= center_half
+                    and abs(v - 0.5) <= center_half
+                )
+                off_diagonal = not (diag_down or diag_up)
+                regions = (
+                    diag_down,
+                    diag_up,
+                    center,
+                    off_diagonal,
+                    diag_down and u < 0.5 and v < 0.5,
+                    diag_down and u >= 0.5 and v >= 0.5,
+                    diag_up and u >= 0.5 and v < 0.5,
+                    diag_up and u < 0.5 and v >= 0.5,
+                )
+                for index, inside in enumerate(regions):
+                    if inside:
+                        total_counts[index] += 1
+                        if red:
+                            red_counts[index] += 1
+
+        return tuple(
+            red_count / total_count if total_count else 0.0
+            for red_count, total_count in zip(red_counts, total_counts)
+        )
+
+    @staticmethod
+    def _red_x_score_from_fills(fills: tuple[float, ...]) -> float:
+        if len(fills) < 8:
+            return 0.0
+        center_fill = fills[2]
+        off_diag_fill = fills[3]
+        arm_fills = fills[4:8]
+        return max(0.0, min(center_fill, *arm_fills) - off_diag_fill)
+
+    @staticmethod
+    def _classify_evidence(
+        gain_ratio: float,
+        harmful_ratio: float,
+        red_x_score: float,
+        red_off_diag_fill: float,
+        minimum_color_ratio: float,
+        minimum_red_x_score: float,
+    ) -> tuple[EnergyClass, float]:
+        color_threshold = max(1e-9, minimum_color_ratio)
+        x_threshold = max(1e-9, minimum_red_x_score)
+        gain_detected = gain_ratio >= color_threshold
+        harmful_detected = (
+            harmful_ratio >= color_threshold and red_x_score >= x_threshold
+        )
+
+        if gain_detected and harmful_detected:
+            return EnergyClass.UNKNOWN, 0.0
+        if harmful_detected:
+            red_confidence = ColorEnergyDetector._color_confidence(
+                harmful_ratio, color_threshold
+            )
+            x_confidence = ColorEnergyDetector._color_confidence(
+                red_x_score, x_threshold
+            )
+            return EnergyClass.HARMFUL, min(red_confidence, x_confidence)
+        if gain_detected:
+            return EnergyClass.GAIN, ColorEnergyDetector._color_confidence(
+                gain_ratio, color_threshold
             )
 
-        _, _, tag, center_x, bbox_width = min(candidates, key=lambda item: item[:2])
-        tag_id = int(tag.tag_id)
-        if tag_id in self.config.harmful_tag_ids:
-            classification = EnergyClass.HARMFUL
-        elif not self.config.gain_tag_ids or tag_id in self.config.gain_tag_ids:
-            classification = EnergyClass.GAIN
-        else:
-            classification = EnergyClass.UNKNOWN
-
-        margin = float(getattr(tag, "decision_margin", 50.0))
-        confidence = max(0.0, min(1.0, margin / 100.0))
-        return VisionResult(
-            classification=classification,
-            confidence=confidence,
-            center_x=center_x,
-            bbox_width=bbox_width,
-            tag_id=tag_id,
-            timestamp=now,
-            frame_width=width,
+        gain_absence = 1.0 - min(
+            1.0, max(0.0, gain_ratio) / color_threshold
         )
+        if harmful_ratio >= color_threshold:
+            # Strong red outside the X diagonals is positive evidence for a
+            # non-X arena marking. A nearly-X-shaped red target stays low
+            # confidence so the state machine will treat it as uncertain.
+            harmful_absence = min(1.0, max(0.0, red_off_diag_fill))
+        else:
+            harmful_absence = 1.0 - min(
+                1.0, max(0.0, harmful_ratio) / color_threshold
+            )
+        no_marker_confidence = min(gain_absence, harmful_absence)
+        return EnergyClass.NO_BLOCK_MARKER, no_marker_confidence
+
+    @staticmethod
+    def _color_confidence(color_ratio: float, threshold: float) -> float:
+        relative_excess = max(0.0, color_ratio - threshold) / threshold
+        return min(1.0, 0.5 + 0.5 * relative_excess)
 
     def _set_error(self, error: str) -> None:
         now = self._clock()
@@ -240,4 +531,12 @@ class AprilTagEnergyDetector:
             )
 
 
-__all__ = ["AprilTagEnergyDetector", "EnergyClass", "VisionResult"]
+__all__ = [
+    "CAMERA_PROBE_READS",
+    "ColorEnergyDetector",
+    "ColorFrameAnalysis",
+    "EnergyClass",
+    "RedXEvidence",
+    "VisionResult",
+    "open_first_usable_camera",
+]

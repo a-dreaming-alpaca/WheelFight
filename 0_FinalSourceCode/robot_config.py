@@ -39,8 +39,9 @@ class SensorConfig:
     ir_near_is_high: bool = True
     ir_detect_enter: int = 200
     ir_detect_exit: int = 150
-    # A missing camera marker is enemy evidence only when the centered ranging
-    # target is at least this close. This is provisional and must be measured.
+    # A frame with neither complete energy-block marker is enemy evidence only
+    # when the centered ranging target is at least this close. This is
+    # provisional and must be measured.
     no_marker_enemy_ir_threshold: int = 350
     start_hand_enter: int = 250
     start_hand_exit: int = 100
@@ -130,16 +131,35 @@ class VisionConfig:
     camera_indices: tuple[int, ...] = (0, 1)
     frame_width: int = 640
     frame_height: int = 480
-    tag_family: str = "tag36h11"
-    harmful_tag_ids: tuple[int, ...] = (2,)
-    # During local testing, every detected tag not listed as harmful is gain.
-    gain_tag_ids: tuple[int, ...] = ()
     classify_votes: int = 3
     no_marker_votes_for_enemy: int = 5
-    min_tag_confidence: float = 0.35
-    min_tag_width_px: float = 18.0
-    center_region_min: float = 0.20
-    center_region_max: float = 0.80
+    min_color_confidence: float = 0.35
+
+    # The IR layer centers the target first, so color recognition only uses a
+    # fixed central image region. All HSV values use OpenCV's H=0..179 scale.
+    roi_x_min: float = 0.20
+    roi_x_max: float = 0.80
+    roi_y_min: float = 0.15
+    roi_y_max: float = 0.85
+    yellow_green_h_min: int = 25
+    yellow_green_h_max: int = 50
+    red_h_low_min: int = 0
+    red_h_low_max: int = 12
+    red_h_high_min: int = 168
+    red_h_high_max: int = 179
+    min_saturation: int = 70
+    min_value: int = 60
+    # Provisional: lower this only after checking false positives on the final
+    # camera; raise it if small colored noise is classified as a block.
+    min_color_area_ratio: float = 0.015
+
+    # A harmful block must also form a red X. The red candidate is normalized
+    # before these ratios are evaluated, so the score is largely independent
+    # of its apparent size. These are provisional calibration values.
+    red_x_diagonal_band_ratio: float = 0.14
+    red_x_center_size_ratio: float = 0.22
+    min_red_x_score: float = 0.20
+
     reconnect_interval: float = 1.0
     show_debug_window: bool = False
 
