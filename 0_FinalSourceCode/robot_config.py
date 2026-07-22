@@ -19,13 +19,13 @@ class HardwareConfig:
     motor_limit: int = 1000
     servo_speed: int = 500
 
-    # Temporary, deliberately moderate values. Keep the interlock disabled
-    # until both positions have been checked with the mechanism unloaded.
-    shovel_motion_enabled: bool = False
-    shovel_raised_left: int = 512
-    shovel_raised_right: int = 512
-    shovel_lowered_left: int = 650
-    shovel_lowered_right: int = 374
+    # Calibrated shovel positions. Motion is enabled, so startup immediately
+    # raises the shovel; keep the mechanism clear whenever the bus is opened.
+    shovel_motion_enabled: bool = True
+    shovel_raised_left: int = 12
+    shovel_raised_right: int = 1012
+    shovel_lowered_left: int = 512
+    shovel_lowered_right: int = 512
 
 
 @dataclass(frozen=True)
@@ -37,14 +37,14 @@ class SensorConfig:
     # The response falls again inside roughly 10 cm, so these values still
     # require final on-robot calibration with every sensor installed.
     ir_near_is_high: bool = True
-    ir_detect_enter: int = 200
-    ir_detect_exit: int = 150
+    ir_detect_enter: int = 400
+    ir_detect_exit: int = 350
     # A frame with neither complete energy-block marker is enemy evidence only
     # when the centered ranging target is at least this close. This is
     # provisional and must be measured.
     no_marker_enemy_ir_threshold: int = 350
-    start_hand_enter: int = 250
-    start_hand_exit: int = 100
+    start_hand_enter: int = 400
+    start_hand_exit: int = 350
 
     # Grayscale is confirmed by the team to be larger on the platform.
     gray_on_enter: int = 550

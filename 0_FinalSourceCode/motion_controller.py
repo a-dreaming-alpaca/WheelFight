@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -89,6 +90,13 @@ class MotionController:
         if self._closed or not self.config.shovel_motion_enabled:
             return False
         speed = self.config.servo_speed
+        self.uptech.CDS_SetAngle(
+            self.config.left_shovel_servo_id, int(left_angle), speed
+        )
+        self.uptech.CDS_SetAngle(
+            self.config.right_shovel_servo_id, int(right_angle), speed
+        )
+        time.sleep(0.01)
         self.uptech.CDS_SetAngle(
             self.config.left_shovel_servo_id, int(left_angle), speed
         )

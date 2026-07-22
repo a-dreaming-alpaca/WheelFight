@@ -68,9 +68,20 @@ class MotionControllerTests(unittest.TestCase):
             shovel_lowered_right=384,
         )
         controller = MotionController(uptech=uptech, config=config, open_bus=False)
-        self.assertTrue(controller.lower_shovel())
-        self.assertIn(("angle", 5, 640, config.servo_speed), uptech.calls)
-        self.assertIn(("angle", 6, 384, config.servo_speed), uptech.calls)
+        with patch("motion_controller.time.sleep") as sleep:
+            self.assertTrue(controller.lower_shovel())
+
+        angle_calls = [call for call in uptech.calls if call[0] == "angle"]
+        self.assertEqual(
+            angle_calls,
+            [
+                ("angle", 5, 640, config.servo_speed),
+                ("angle", 6, 384, config.servo_speed),
+                ("angle", 5, 640, config.servo_speed),
+                ("angle", 6, 384, config.servo_speed),
+            ],
+        )
+        sleep.assert_called_once_with(0.01)
 
 
 if __name__ == "__main__":

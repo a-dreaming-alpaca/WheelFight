@@ -79,6 +79,11 @@ def test_config():
     sensors = replace(
         DEFAULT_CONFIG.sensors,
         analog_filter_window=1,
+        # State-machine scenarios use fixed synthetic readings; keep their
+        # thresholds independent from the current on-robot calibration.
+        ir_detect_enter=200,
+        ir_detect_exit=150,
+        no_marker_enemy_ir_threshold=350,
         edge_clear_frames=1,
         rear_high_confirm_frames=1,
         platform_confirm_frames=1,
