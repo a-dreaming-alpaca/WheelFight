@@ -78,6 +78,12 @@ Filtering must preserve the raw values in logs.
 
 After grayscale calibration, derive one of:
 
+The installed sensors currently read about 300 over the platform and about 900
+off the platform. `gray_on_is_high` is therefore false: a filtered value at or
+below `gray_on_enter` enters the on-platform state, while an active on-platform
+state is retained until the value rises above `gray_off_exit`. Values between
+the two thresholds preserve the previous semantic state.
+
 | State | Front grayscale | Rear grayscale | Interpretation |
 | --- | --- | --- | --- |
 | `PLATFORM_ON` | on | on | Chassis is on the platform |
@@ -638,6 +644,6 @@ Before motor-control implementation, confirm:
 - exact mapping and sign of the four motors into left/right pairs;
 - whether forward/reverse commands are symmetric under load;
 - shovel servo IDs, raised/lowered angles, and whether both servos mirror;
-- the physical order and polarity of the two grayscale sensors after final
-  mounting;
+- the physical order of the two grayscale sensors and the remaining margin of
+  the calibrated low-on-platform polarity after final mounting;
 - safe probe distance, climb distance, and rear optical detection envelope.

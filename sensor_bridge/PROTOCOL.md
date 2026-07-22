@@ -25,6 +25,10 @@ The digital fields always contain the raw electrical level (`0` or `1`). The
 receiver exposes separate active-low boolean properties so the raw evidence is
 not lost.
 
+The grayscale fields are also transmitted as raw ADC values. Current hardware
+measurements are about 300 on the platform and 900 off it; polarity, filtering,
+and hysteresis are interpreted only by the RK3588S perception layer.
+
 ## Frame format
 
 ```text

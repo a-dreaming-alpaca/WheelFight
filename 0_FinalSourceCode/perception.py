@@ -93,6 +93,17 @@ class PerceptionSnapshot:
 
 class PerceptionEngine:
     def __init__(self, config: SensorConfig = DEFAULT_CONFIG.sensors) -> None:
+        if config.gray_on_is_high:
+            valid_gray_hysteresis = config.gray_on_enter > config.gray_off_exit
+        else:
+            valid_gray_hysteresis = config.gray_on_enter < config.gray_off_exit
+        if not valid_gray_hysteresis:
+            polarity = "high" if config.gray_on_is_high else "low"
+            raise ValueError(
+                "invalid grayscale hysteresis thresholds for "
+                f"{polarity}-on-platform polarity"
+            )
+
         self.config = config
         window = max(1, config.analog_filter_window)
         self._analog_windows = [deque(maxlen=window) for _ in range(14)]
@@ -163,14 +174,14 @@ class PerceptionEngine:
             filtered[12],
             self.config.gray_on_enter,
             self.config.gray_off_exit,
-            True,
+            self.config.gray_on_is_high,
         )
         self._gray_on[1] = self._update_hysteresis(
             self._gray_on[1],
             filtered[13],
             self.config.gray_on_enter,
             self.config.gray_off_exit,
-            True,
+            self.config.gray_on_is_high,
         )
 
         self._update_edge(0, frame.digital[0] == 1)

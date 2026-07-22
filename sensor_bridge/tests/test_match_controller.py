@@ -84,6 +84,11 @@ def test_config():
         ir_detect_enter=200,
         ir_detect_exit=150,
         no_marker_enemy_ir_threshold=350,
+        # These state-machine tests consume semantic platform states and keep
+        # their legacy synthetic levels independent from hardware polarity.
+        gray_on_is_high=True,
+        gray_on_enter=550,
+        gray_off_exit=450,
         edge_clear_frames=1,
         rear_high_confirm_frames=1,
         platform_confirm_frames=1,
