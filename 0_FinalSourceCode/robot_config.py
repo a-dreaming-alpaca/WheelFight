@@ -22,10 +22,10 @@ class HardwareConfig:
     # Calibrated shovel positions. Motion is enabled, so startup immediately
     # raises the shovel; keep the mechanism clear whenever the bus is opened.
     shovel_motion_enabled: bool = True
-    shovel_raised_left: int = 12
-    shovel_raised_right: int = 1012
-    shovel_lowered_left: int = 512
-    shovel_lowered_right: int = 512
+    shovel_raised_left: int = 462
+    shovel_raised_right: int = 550
+    shovel_lowered_left: int = 1012
+    shovel_lowered_right: int = 0
 
 
 @dataclass(frozen=True)

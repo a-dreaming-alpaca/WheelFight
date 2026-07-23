@@ -15,11 +15,15 @@ def run_selected_action(motion: MotionController) -> None:
     #     DEFAULT_CONFIG.motion.search_turn_speed,
     #     -DEFAULT_CONFIG.motion.search_turn_speed,
     # )
-    # motion.raise_shovel()
-    # motion.lower_shovel()
-    motion.move_cmd(500,-500)
-    time.sleep(0.9)
-    motion.move_cmd(0,0)
+   
+    motion.raise_shovel()
+    input('lower')
+    motion.lower_shovel()
+    input('raise')
+    motion.raise_shovel
+    
+
+   
 
 
 def main() -> None:
