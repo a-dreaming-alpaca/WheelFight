@@ -109,6 +109,11 @@ contains:
 - last-seen time;
 - temporary classification, if any.
 
+A6 uses its own calibrated enter/exit thresholds because its farther-forward
+mounting position produces a weaker rear-facing reading than A5/A7. The same
+A6 exit threshold is also used as its cluster-strength baseline so that an
+active A6 both connects and meaningfully centers the rear cluster.
+
 The robot remains reactive and does not require an absolute map. Cluster
 history is short-lived and is cleared after major climb/fall transitions.
 

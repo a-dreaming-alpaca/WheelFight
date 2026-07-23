@@ -39,6 +39,11 @@ class SensorConfig:
     ir_near_is_high: bool = True
     ir_detect_enter: int = 350
     ir_detect_exit: int = 300
+    # A6 points directly rearward but is mounted farther forward than the
+    # neighboring A5/A7 sensors, so its weaker reading needs its own calibrated
+    # hysteresis pair.
+    ir_a6_detect_enter: int = 300
+    ir_a6_detect_exit: int = 250
     # A frame with neither complete energy-block marker is enemy evidence only
     # when the centered ranging target is at least this close. This is
     # provisional and must be measured.
@@ -73,10 +78,10 @@ class SensorConfig:
 class MotionConfig:
     search_turn_speed: int = 500
     align_turn_speed: int = 500
-    fence_escape_forward_speed: int = 300
+    fence_escape_forward_speed: int = 400
     fence_escape_turn_speed: int = 500
     platform_probe_speed: int = 300
-    climb_prepare_speed: int = 600
+    climb_prepare_speed: int = 400
     climb_speed: int = 900
     climb_clear_speed: int = 300
     arena_patrol_speed: int = 600
@@ -114,8 +119,8 @@ class TimingConfig:
     platform_probe_timeout: float = 0.60
     climb_prepare_forward_time: float = 0.70
     climb_prepare_settle_time: float = 0.08
-    fence_escape_forward_time: float = 0.40
-    fence_escape_turn_time: float = 1.15
+    fence_escape_forward_time: float = 1.00
+    fence_escape_turn_time: float = 2.00
     climb_timeout: float = 2.20
     climb_clear_stable_time: float = 0.20
     climb_clear_timeout: float = 1.20

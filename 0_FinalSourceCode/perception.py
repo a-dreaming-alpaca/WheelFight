@@ -14,6 +14,9 @@ from mega_sensor_reader import SensorFrame
 from robot_config import DEFAULT_CONFIG, SensorConfig
 
 
+REAR_CENTER_IR_INDEX = 6
+
+
 class PlatformState(str, Enum):
     UNKNOWN = "UNKNOWN"
     ON = "ON"
@@ -146,11 +149,12 @@ class PerceptionEngine:
         )
 
         for index in range(12):
+            enter, exit_value = self._ir_thresholds(index)
             self._ir_active[index] = self._update_hysteresis(
                 self._ir_active[index],
                 filtered[index],
-                self.config.ir_detect_enter,
-                self.config.ir_detect_exit,
+                enter,
+                exit_value,
                 self.config.ir_near_is_high,
             )
 
@@ -226,6 +230,14 @@ class PerceptionEngine:
         threshold = exit_value if current else enter
         return value >= threshold if high_is_true else value <= threshold
 
+    def _ir_thresholds(self, index: int) -> tuple[int, int]:
+        if index == REAR_CENTER_IR_INDEX:
+            return (
+                self.config.ir_a6_detect_enter,
+                self.config.ir_a6_detect_exit,
+            )
+        return self.config.ir_detect_enter, self.config.ir_detect_exit
+
     def _update_edge(self, index: int, raw_edge: bool) -> None:
         if raw_edge:
             self._edge_state[index] = True
@@ -296,7 +308,9 @@ class PerceptionEngine:
 
         clusters = []
         for indices in groups:
-            weights = [self._ir_strength(values[index]) for index in indices]
+            weights = [
+                self._ir_strength(index, values[index]) for index in indices
+            ]
             x = 0.0
             y = 0.0
             for index, weight in zip(indices, weights):
@@ -321,10 +335,11 @@ class PerceptionEngine:
             )
         return tuple(clusters)
 
-    def _ir_strength(self, value: int) -> float:
+    def _ir_strength(self, index: int, value: int) -> float:
+        _, exit_value = self._ir_thresholds(index)
         if self.config.ir_near_is_high:
-            return float(max(1, value - self.config.ir_detect_exit))
-        return float(max(1, self.config.ir_detect_exit - value))
+            return float(max(1, value - exit_value))
+        return float(max(1, exit_value - value))
 
 
 __all__ = [
