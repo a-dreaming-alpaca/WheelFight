@@ -511,9 +511,6 @@ class MatchController:
         if p.platform_state == PlatformState.ON and self._climb_seen_rear_on:
             self._transition(RobotState.CLIMB_CLEAR_EDGE, "both grayscale on", now)
             return DriveCommand(label="climb-success-stop")
-        if p.rear_high_object:
-                    self._transition(RobotConfig.FENCE_ESCAPE, "climb but find fence", now)
-                    return DriveCommand(label="No accident")
         if self._state_elapsed(now) > self.config.timing.climb_timeout:
             self._transition(RobotState.FENCE_ESCAPE, "climb timeout withdraw", now)
             return DriveCommand(label="climb-timeout-stop")

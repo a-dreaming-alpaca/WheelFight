@@ -78,10 +78,10 @@ class SensorConfig:
 class MotionConfig:
     search_turn_speed: int = 500
     align_turn_speed: int = 500
-    fence_escape_forward_speed: int = 400
-    fence_escape_turn_speed: int = 500
+    fence_escape_forward_speed: int = 500
+    fence_escape_turn_speed: int = 600
     platform_probe_speed: int = 300
-    climb_prepare_speed: int = 400
+    climb_prepare_speed: int = 500
     climb_speed: int = 900
     climb_clear_speed: int = 300
     arena_patrol_speed: int = 600
