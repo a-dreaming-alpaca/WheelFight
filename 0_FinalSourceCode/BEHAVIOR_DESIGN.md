@@ -468,8 +468,12 @@ with a stale camera result.
 For harmful or unresolved energy blocks:
 
 - stop approach;
-- turn clockwise/right in place for a calibrated duration intended to produce
-  approximately 180 degrees of heading change;
+- alternate clockwise/right and counterclockwise/left turns on each new
+  avoidance entry, starting with a clockwise/right turn; keep the selected
+  direction fixed for the complete turn phase, even if the target bearing
+  changes;
+- turn in place for a calibrated duration intended to produce approximately
+  180 degrees of heading change;
 - drive forward at a separate low departure speed for a calibrated short
   duration, physically increasing separation from the rejected target;
 - ignore ordinary target clusters until both phases finish, while still
@@ -480,8 +484,9 @@ For harmful or unresolved energy blocks:
 
 The turn and departure durations are open-loop calibration values. The
 departure distance must be long enough that a stationary rejected block no
-longer dominates the next all-direction scan. Avoidance direction does not
-alternate between attempts.
+longer dominates the next all-direction scan. Each new avoidance entry uses
+the opposite turn direction from the previous entry, including after safety
+preemption interrupts an attempt.
 
 ## 9. Edge and fall recovery
 
@@ -602,7 +607,7 @@ Keep these in a configuration file:
   and reconnect timing;
 - search, alignment, probe, climb, patrol, attack, push, and recovery speeds;
 - `avoid_turn_speed` and `avoid_turn_time`: tune together for approximately
-  180 degrees of clockwise/right rotation;
+  180 degrees of rotation in either avoidance direction;
 - `avoid_depart_speed` and `avoid_depart_time`: low-speed forward separation
   after the avoidance turn;
 - `climb_prepare_speed`: forward speed used to create backward run-up room;

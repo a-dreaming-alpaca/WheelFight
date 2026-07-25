@@ -76,24 +76,24 @@ class SensorConfig:
 
 @dataclass(frozen=True)
 class MotionConfig:
-    search_turn_speed: int = 500
-    align_turn_speed: int = 500
+    search_turn_speed: int = 600
+    align_turn_speed: int = 600
     fence_escape_forward_speed: int = 500
     fence_escape_turn_speed: int = 600
     platform_probe_speed: int = 300
     climb_prepare_speed: int = 500
     climb_speed: int = 900
     climb_clear_speed: int = 300
-    arena_patrol_speed: int = 600
+    arena_patrol_speed: int = 550
     attack_speed: int = 700
     attack_min_speed: int = 350
     push_gain_speed: int = 500
-    avoid_turn_speed: int = 500
-    avoid_depart_speed: int = 200
+    avoid_turn_speed: int = 600
+    avoid_depart_speed: int = 500
     edge_reverse_speed: int = 500
-    edge_turn_speed: int = 500
+    edge_turn_speed: int = 600
     partial_recover_speed: int = 500
-    target_turn_gain: float = 4.0
+    target_turn_gain: float = 5.0
 
 
 @dataclass(frozen=True)

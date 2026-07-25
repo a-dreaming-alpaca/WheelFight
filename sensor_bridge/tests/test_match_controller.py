@@ -673,7 +673,6 @@ class MatchControllerTests(unittest.TestCase):
             self.assertLess(command.right_speed, 0)
             self.assertEqual(command.label, "fence-escape-turn")
         self.assertFalse(hasattr(h.controller, "_alternate_turn_sign"))
-        self.assertFalse(hasattr(h.controller, "_avoid_turn_sign"))
 
     def test_single_edge_recovery_turn_directions_are_unchanged(self):
         def turn_command_for(digital):
@@ -732,12 +731,15 @@ class MatchControllerTests(unittest.TestCase):
         h.step(ir={0: 800}, gray=(700, 700), vision=EnergyClass.HARMFUL)
         self.assertEqual(h.controller.state, RobotState.AVOID_BLOCK)
 
-    def test_fixed_right_avoidance_ignores_rejected_target_side(self):
+    def test_first_avoidance_turns_right_regardless_of_rejected_target_side(self):
         for sensor_index in (1, 11):
             with self.subTest(sensor_index=sensor_index):
                 h = ControllerHarness()
-                h.controller.state = RobotState.AVOID_BLOCK
-                h.controller.state_entered = h.clock()
+                h.controller._transition(
+                    RobotState.AVOID_BLOCK,
+                    "test first avoidance",
+                    h.clock(),
+                )
 
                 command = h.step(
                     ir={sensor_index: 800},
@@ -752,10 +754,81 @@ class MatchControllerTests(unittest.TestCase):
                 )
                 self.assertEqual(command.label, "avoid-block-turn-right")
 
-    def test_avoid_block_turns_right_then_drives_forward_before_search(self):
+    def test_avoidance_stays_fixed_then_alternates_after_edge_preemption(self):
         h = ControllerHarness()
-        h.controller.state = RobotState.AVOID_BLOCK
-        h.controller.state_entered = h.clock()
+        speed = h.controller.config.motion.avoid_turn_speed
+        h.controller._transition(
+            RobotState.AVOID_BLOCK,
+            "test first avoidance",
+            h.clock(),
+        )
+        first_right = h.step(ir={1: 800}, gray=(700, 700))
+        same_entry_right = h.step(ir={11: 800}, gray=(700, 700))
+
+        edge_stop = h.step(gray=(700, 700), digital=(0, 1, 1))
+        self.assertEqual(h.controller.state, RobotState.EDGE_RECOVER)
+        self.assertEqual(edge_stop.label, "edge-stop")
+
+        h.controller._transition(
+            RobotState.AVOID_BLOCK,
+            "test avoidance after edge recovery",
+            h.clock(),
+        )
+        next_left = h.step(ir={0: 800}, gray=(700, 700))
+        h.controller._transition(
+            RobotState.ARENA_SEARCH,
+            "test second avoidance complete",
+            h.clock(),
+        )
+        h.controller._transition(
+            RobotState.AVOID_BLOCK,
+            "test third avoidance",
+            h.clock(),
+        )
+        third_right = h.step(ir={0: 800}, gray=(700, 700))
+
+        self.assertEqual(
+            [
+                (command.left_speed, command.right_speed)
+                for command in (
+                    first_right,
+                    same_entry_right,
+                    next_left,
+                    third_right,
+                )
+            ],
+            [
+                (speed, -speed),
+                (speed, -speed),
+                (-speed, speed),
+                (speed, -speed),
+            ],
+        )
+        self.assertEqual(
+            [
+                command.label
+                for command in (
+                    first_right,
+                    same_entry_right,
+                    next_left,
+                    third_right,
+                )
+            ],
+            [
+                "avoid-block-turn-right",
+                "avoid-block-turn-right",
+                "avoid-block-turn-left",
+                "avoid-block-turn-right",
+            ],
+        )
+
+    def test_avoid_block_turns_then_drives_forward_before_search(self):
+        h = ControllerHarness()
+        h.controller._transition(
+            RobotState.AVOID_BLOCK,
+            "test avoidance phases",
+            h.clock(),
+        )
         entered = h.controller.state_entered
         timing = h.controller.config.timing
         motion = h.controller.config.motion
@@ -793,8 +866,11 @@ class MatchControllerTests(unittest.TestCase):
 
     def test_edge_preempts_avoid_departure(self):
         h = ControllerHarness()
-        h.controller.state = RobotState.AVOID_BLOCK
-        h.controller.state_entered = h.clock()
+        h.controller._transition(
+            RobotState.AVOID_BLOCK,
+            "test edge preemption",
+            h.clock(),
+        )
         h.clock.value += h.controller.config.timing.avoid_turn_time + 1e-6
 
         command = h.step(gray=(700, 700), digital=(1, 0, 1))

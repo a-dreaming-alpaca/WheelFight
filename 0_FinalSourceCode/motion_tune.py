@@ -11,16 +11,14 @@ def run_selected_action(motion: MotionController) -> None:
 
     # Safe default. Replace this one line with the action currently being
     # tested, for example:
-    # motion.move_cmd(
-    #     DEFAULT_CONFIG.motion.search_turn_speed,
-    #     -DEFAULT_CONFIG.motion.search_turn_speed,
-    # )
-   
-    motion.raise_shovel()
+    motion.move_cmd(600, 350)
+    
+    '''motion.raise_shovel()
     input('lower')
     motion.lower_shovel()
     input('raise')
-    motion.raise_shovel
+    motion.raise_shovel()'''
+
     
 
    

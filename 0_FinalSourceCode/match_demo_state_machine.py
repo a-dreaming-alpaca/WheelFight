@@ -136,6 +136,9 @@ class MatchController:
         self._last_vision_vote_timestamp: Optional[float] = None
         self._target_last_seen = now
         self._edge_pattern = (False, False)
+        # A positive sign is a right turn. Lock it per avoidance entry.
+        self._avoid_turn_sign = 1
+        self._next_avoid_turn_sign = 1
         self._climb_seen_rear_on = False
         self._fault_started = now
         self._last_feature_signature = None
@@ -722,8 +725,9 @@ class MatchController:
         timing = self.config.timing
         motion = self.config.motion
         if elapsed < timing.avoid_turn_time:
-            speed = motion.avoid_turn_speed
-            return DriveCommand(speed, -speed, "avoid-block-turn-right")
+            speed = motion.avoid_turn_speed * self._avoid_turn_sign
+            direction = "right" if self._avoid_turn_sign > 0 else "left"
+            return DriveCommand(speed, -speed, f"avoid-block-turn-{direction}")
         if elapsed < timing.avoid_turn_time + timing.avoid_depart_time:
             speed = motion.avoid_depart_speed
             return DriveCommand(speed, speed, "avoid-block-depart-forward")
@@ -828,8 +832,16 @@ class MatchController:
     # Helpers
     # ------------------------------------------------------------------
     def _transition(self, state: RobotState, reason: str, now: float) -> None:
+        entering_avoid = (
+            state == RobotState.AVOID_BLOCK and self.state != RobotState.AVOID_BLOCK
+        )
         if self.state != state:
             print(f"State:{self.state.value}->{state.value} {reason}")
+        if entering_avoid:
+            # Consume the direction on entry so an edge-preempted attempt still
+            # causes the following avoidance attempt to choose the other side.
+            self._avoid_turn_sign = self._next_avoid_turn_sign
+            self._next_avoid_turn_sign *= -1
         self.state = state
         self.state_reason = reason
         self.state_entered = now
