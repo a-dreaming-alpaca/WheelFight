@@ -95,12 +95,10 @@ def test_config():
     )
     timing = replace(
         DEFAULT_CONFIG.timing,
+        video_demo_sensor_hold_enabled=False,
         sensor_stop_after=0.20,
-        start_clear_time=0.01,
-        start_hand_confirm_time=0.01,
-        start_release_confirm_time=0.01,
-        start_release_delay=0.01,
         shovel_settle_time=0.01,
+        startup_climb_time=0.08,
         ground_candidate_confirm=0.01,
         platform_verify_time=0.01,
         climb_prepare_forward_time=0.04,
@@ -123,6 +121,22 @@ def test_config():
         timing=timing,
         vision=vision,
     )
+
+
+def video_demo_config(**timing_overrides):
+    config = test_config()
+    values = {
+        "sensor_warning_after": 0.06,
+        "sensor_stop_after": 0.10,
+        "video_demo_sensor_hold_enabled": True,
+        "video_demo_sensor_hold_time": 0.50,
+        "video_demo_sensor_resume_frames": 3,
+        "video_demo_fault_recover_time": 0.01,
+        "match_duration": 10.0,
+        "stuck_timeout": 10.0,
+    }
+    values.update(timing_overrides)
+    return replace(config, timing=replace(config.timing, **values))
 
 
 class ControllerHarness:
@@ -151,6 +165,7 @@ class ControllerHarness:
         vision=None,
         vision_confidence=1.0,
         received_age=0.0,
+        sequence=None,
     ):
         # The first ranging calibration measured an unobstructed IR value near 0.
         analog = [0] * 14
@@ -168,13 +183,26 @@ class ControllerHarness:
                 timestamp=self.clock(),
                 frame_width=640,
             )
-        self.sequence += 1
+        if sequence is None:
+            self.sequence += 1
+        else:
+            self.sequence = sequence
         self.reader.frame = SensorFrame(
             sequence=self.sequence,
             mega_millis=self.sequence * 20,
             analog=tuple(analog),
             digital=tuple(digital),
             received_monotonic=self.clock() - received_age,
+        )
+        command = self.controller.step_once(self.clock())
+        self.clock.advance()
+        return command
+
+    def repeat_last_frame_at_age(self, received_age):
+        if self.reader.frame is None:
+            raise RuntimeError("no sensor frame to repeat")
+        self.clock.value = (
+            self.reader.frame.received_monotonic + received_age
         )
         command = self.controller.step_once(self.clock())
         self.clock.advance()
@@ -229,22 +257,68 @@ class MatchControllerTests(unittest.TestCase):
         self.assertEqual(controller.sensor_reader.read_timeout, 0.037)
         self.assertEqual(controller.sensor_reader.reconnect_interval, 0.42)
 
-    def test_two_hand_press_and_release_generates_start_event(self):
+    def test_two_hand_gesture_deploys_shovel_then_starts_fixed_time_climb(self):
         h = ControllerHarness()
-        h.step()  # boot -> wait clear
-        h.step()
-        h.step()  # clear held -> wait hands
+        h.step()  # boot -> wait for the direct two-hand gesture
+        self.assertEqual(h.controller.state, RobotState.WAIT_START_GESTURE)
         h.step(ir={3: 800, 9: 800})
-        h.step(ir={3: 800, 9: 800})  # hands confirmed
-        self.assertEqual(h.controller.state, RobotState.WAIT_START_RELEASE)
-        h.step()
-        h.step()  # release confirmed
-        self.assertEqual(h.controller.state, RobotState.START_RELEASE_DELAY)
+        self.assertEqual(h.controller.state, RobotState.DEPLOY_SHOVEL)
         self.assertTrue(h.controller.match_started)
-        h.step()
-        h.step()
-        self.assertEqual(h.controller.state, RobotState.GROUND_SEARCH)
+        deploy_command = h.step(gray=(700, 700))
+        self.assertEqual(h.controller.state, RobotState.STARTUP_CLIMB)
+        self.assertEqual(
+            (deploy_command.left_speed, deploy_command.right_speed),
+            (0, 0),
+        )
         self.assertEqual(h.motion.shovel_pose, "lowered")
+
+        command = h.step(gray=(700, 700))
+        climb_speed = h.controller.config.motion.climb_speed
+        self.assertEqual(
+            (command.left_speed, command.right_speed),
+            (-climb_speed, -climb_speed),
+        )
+        self.assertEqual(h.controller.state, RobotState.STARTUP_CLIMB)
+
+    def test_startup_climb_stops_at_fixed_deadline_and_enters_clearance(self):
+        h = ControllerHarness()
+        h.controller.state = RobotState.STARTUP_CLIMB
+        h.controller.state_entered = h.clock()
+        entered = h.controller.state_entered
+        duration = h.controller.config.timing.startup_climb_time
+
+        h.clock.value = entered + duration - 1e-6
+        moving = h.step(gray=(700, 700))
+        climb_speed = h.controller.config.motion.climb_speed
+        self.assertEqual(
+            (moving.left_speed, moving.right_speed),
+            (-climb_speed, -climb_speed),
+        )
+        self.assertEqual(h.controller.state, RobotState.STARTUP_CLIMB)
+
+        h.clock.value = entered + duration
+        stopped = h.step(gray=(700, 700))
+
+        self.assertEqual(h.controller.state, RobotState.CLIMB_CLEAR_EDGE)
+        self.assertEqual((stopped.left_speed, stopped.right_speed), (0, 0))
+        self.assertEqual(stopped.label, "startup-climb-complete-stop")
+
+    def test_startup_climb_deadline_prefers_fresh_rear_fence(self):
+        config = test_config()
+        sensors = replace(config.sensors, rear_high_confirm_frames=3)
+        h = ControllerHarness(replace(config, sensors=sensors))
+        h.controller.state = RobotState.STARTUP_CLIMB
+        h.controller.state_entered = h.clock()
+        h.clock.value += h.controller.config.timing.startup_climb_time + 1e-6
+
+        stopped = h.step(digital=(0, 0, 0))
+
+        self.assertEqual(h.controller.state, RobotState.FENCE_ESCAPE)
+        self.assertEqual((stopped.left_speed, stopped.right_speed), (0, 0))
+        self.assertEqual(
+            stopped.label,
+            "startup-climb-deadline-fence-stop",
+        )
 
     def test_platform_and_fence_verification_use_rear_high_sensor(self):
         platform = ControllerHarness()
@@ -569,6 +643,233 @@ class MatchControllerTests(unittest.TestCase):
         self.assertEqual((command.left_speed, command.right_speed), (0, 0))
         self.assertEqual(command.label, "sensor-stale-stop")
 
+    def test_video_mode_holds_last_command_during_short_sensor_outage(self):
+        h = ControllerHarness(video_demo_config())
+        h.step(gray=(700, 700))
+        h.controller.state = RobotState.ARENA_SEARCH
+        h.controller.state_entered = h.clock()
+        h.controller.match_started = True
+        h.controller.match_start_time = h.clock()
+        moving = h.step(gray=(700, 700))
+
+        held = h.repeat_last_frame_at_age(0.11)
+
+        self.assertEqual(h.controller.state, RobotState.ARENA_SEARCH)
+        self.assertEqual(
+            (held.left_speed, held.right_speed),
+            (moving.left_speed, moving.right_speed),
+        )
+        self.assertTrue(held.label.startswith("video-sensor-hold:"))
+        self.assertTrue(h.controller._sensor_hold_active)
+
+    def test_video_mode_stops_after_bounded_sensor_hold(self):
+        h = ControllerHarness(video_demo_config())
+        h.step(gray=(700, 700))
+        h.controller.state = RobotState.ARENA_SEARCH
+        h.controller.state_entered = h.clock()
+        h.controller.match_started = True
+        h.controller.match_start_time = h.clock()
+        h.step(gray=(700, 700))
+        h.repeat_last_frame_at_age(0.11)
+
+        command = h.repeat_last_frame_at_age(0.51)
+
+        self.assertEqual(h.controller.state, RobotState.FAULT_STOP)
+        self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+        self.assertFalse(h.controller._sensor_hold_active)
+
+    def test_startup_climb_deadline_preempts_video_sensor_hold(self):
+        h = ControllerHarness(
+            video_demo_config(
+                startup_climb_time=0.20,
+                video_demo_sensor_hold_time=0.50,
+            )
+        )
+        h.step(gray=(700, 700))
+        h.controller.state = RobotState.STARTUP_CLIMB
+        h.controller.state_entered = h.clock()
+        entered = h.controller.state_entered
+        h.controller.match_started = True
+        h.controller.match_start_time = h.clock()
+
+        moving = h.step(gray=(700, 700))
+        held = h.repeat_last_frame_at_age(0.11)
+        climb_speed = h.controller.config.motion.climb_speed
+        self.assertEqual(
+            (moving.left_speed, moving.right_speed),
+            (-climb_speed, -climb_speed),
+        )
+        self.assertEqual(
+            (held.left_speed, held.right_speed),
+            (-climb_speed, -climb_speed),
+        )
+        self.assertTrue(h.controller._sensor_hold_active)
+
+        h.clock.value = (
+            entered + h.controller.config.timing.startup_climb_time
+            + 1e-6
+        )
+        stopped = h.controller.step_once(h.clock())
+
+        self.assertEqual(h.controller.state, RobotState.CLIMB_CLEAR_EDGE)
+        self.assertEqual((stopped.left_speed, stopped.right_speed), (0, 0))
+        self.assertFalse(h.controller._sensor_hold_active)
+
+        h.clock.advance()
+        held_stop = h.controller.step_once(h.clock())
+        self.assertEqual((held_stop.left_speed, held_stop.right_speed), (0, 0))
+        self.assertTrue(held_stop.label.startswith("video-sensor-hold:"))
+
+    def test_interrupted_startup_climb_stays_faulted_on_ambiguous_gray(self):
+        h = ControllerHarness()
+        h.controller.state = RobotState.STARTUP_CLIMB
+        h.controller.state_entered = h.clock()
+        h.controller.match_started = True
+        h.controller.match_start_time = h.clock()
+
+        command = h.step(gray=(700, 700), received_age=0.21)
+        self.assertEqual(h.controller.state, RobotState.FAULT_STOP)
+        self.assertEqual(command.label, "sensor-stale-stop")
+        self.assertTrue(h.controller._startup_climb_fault_latched)
+
+        h.step(gray=(700, 700))
+        recovered = h.step(gray=(700, 700))
+
+        self.assertEqual(h.controller.state, RobotState.FAULT_STOP)
+        self.assertEqual(
+            recovered.label,
+            "startup-climb-fault-latched-stop",
+        )
+
+    def test_video_mode_requires_distinct_fresh_frames_before_resume(self):
+        h = ControllerHarness(video_demo_config())
+        h.step(gray=(700, 700))
+        h.controller.state = RobotState.ARENA_SEARCH
+        h.controller.state_entered = h.clock()
+        initial_state_entered = h.controller.state_entered
+        h.controller.match_started = True
+        h.controller.match_start_time = h.clock()
+        h.step(gray=(700, 700))
+        h.repeat_last_frame_at_age(0.11)
+        repeated_sequence = h.reader.frame.sequence
+
+        first = h.step(
+            gray=(700, 700),
+            sequence=repeated_sequence,
+        )
+        duplicate = h.controller.step_once(h.clock())
+        h.clock.advance()
+        second = h.step(gray=(700, 700))
+
+        self.assertTrue(first.label.startswith("video-sensor-hold:"))
+        self.assertTrue(duplicate.label.startswith("video-sensor-hold:"))
+        self.assertTrue(second.label.startswith("video-sensor-hold:"))
+        self.assertEqual(h.controller._sensor_resume_frames, 2)
+
+        resumed = h.step(gray=(700, 700))
+
+        self.assertFalse(h.controller._sensor_hold_active)
+        self.assertFalse(resumed.label.startswith("video-sensor-hold:"))
+        self.assertEqual(
+            h.controller.state_entered,
+            initial_state_entered,
+        )
+
+    def test_video_hold_does_not_repeat_elapsed_open_loop_action_time(self):
+        h = ControllerHarness(
+            video_demo_config(
+                avoid_turn_time=0.20,
+                avoid_depart_time=0.20,
+            )
+        )
+        h.step(gray=(700, 700))
+        h.controller.match_started = True
+        h.controller.match_start_time = h.clock()
+        h.controller._transition(
+            RobotState.AVOID_BLOCK,
+            "test video timing pause",
+            h.clock(),
+        )
+        h.step(gray=(700, 700))
+        h.repeat_last_frame_at_age(0.11)
+
+        h.clock.value = h.reader.frame.received_monotonic + 0.43
+        h.step(gray=(700, 700), sequence=0)
+        h.step(gray=(700, 700))
+        resumed = h.step(gray=(700, 700))
+
+        self.assertEqual(h.controller.state, RobotState.ARENA_SEARCH)
+        self.assertEqual(resumed.label, "avoid-departure-complete-stop")
+
+    def test_sparse_recovery_frames_cannot_extend_absolute_hold_deadline(self):
+        h = ControllerHarness(video_demo_config())
+        h.step(gray=(700, 700))
+        h.controller.state = RobotState.ARENA_SEARCH
+        h.controller.state_entered = h.clock()
+        h.controller.match_started = True
+        h.controller.match_start_time = h.clock()
+        h.step(gray=(700, 700))
+        source_received = h.reader.frame.received_monotonic
+        h.repeat_last_frame_at_age(0.11)
+
+        h.clock.value = source_received + 0.35
+        h.step(gray=(700, 700), sequence=0)
+        h.repeat_last_frame_at_age(0.09)
+        h.clock.value = source_received + 0.48
+        h.step(gray=(700, 700), sequence=0)
+        self.assertEqual(h.controller._sensor_resume_frames, 1)
+        h.clock.value = source_received + 0.51
+        command = h.controller.step_once(h.clock())
+
+        self.assertEqual(h.controller.state, RobotState.FAULT_STOP)
+        self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+        self.assertEqual(command.label, "video-sensor-hold-timeout-stop")
+
+    def test_recovered_edge_preempts_latched_forward_command_immediately(self):
+        h = ControllerHarness(video_demo_config())
+        h.step(gray=(700, 700))
+        h.controller.state = RobotState.ARENA_SEARCH
+        h.controller.state_entered = h.clock()
+        h.controller.match_started = True
+        h.controller.match_start_time = h.clock()
+        h.step(gray=(700, 700))
+        h.repeat_last_frame_at_age(0.11)
+
+        command = h.step(
+            gray=(700, 700),
+            digital=(1, 0, 1),
+            sequence=h.reader.frame.sequence,
+        )
+
+        self.assertEqual(h.controller.state, RobotState.EDGE_RECOVER)
+        self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+        self.assertFalse(h.controller._sensor_hold_active)
+
+    def test_video_hold_does_not_override_match_end(self):
+        h = ControllerHarness(video_demo_config(match_duration=0.20))
+        h.step(gray=(700, 700))
+        h.controller.state = RobotState.ARENA_SEARCH
+        h.controller.state_entered = h.clock()
+        h.controller.match_started = True
+        h.controller.match_start_time = h.clock()
+        h.step(gray=(700, 700))
+        h.repeat_last_frame_at_age(0.11)
+
+        command = h.repeat_last_frame_at_age(0.25)
+
+        self.assertEqual(h.controller.state, RobotState.MATCH_END)
+        self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+        self.assertFalse(h.controller._sensor_hold_active)
+
+    def test_video_mode_never_moves_without_a_historical_sensor_frame(self):
+        h = ControllerHarness(video_demo_config())
+
+        command = h.controller.step_once(h.clock())
+
+        self.assertEqual(h.controller.state, RobotState.BOOT_SELF_CHECK)
+        self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+        self.assertFalse(h.controller._sensor_hold_active)
+
     def test_match_duration_is_a_terminal_stop(self):
         h = ControllerHarness()
         h.controller.state = RobotState.ATTACK_ENEMY
@@ -698,15 +999,21 @@ class MatchControllerTests(unittest.TestCase):
         self.assertLess(right_edge_turn.left_speed, 0)
         self.assertGreater(right_edge_turn.right_speed, 0)
 
-    def test_rear_high_object_preempts_climb_as_fence(self):
-        h = ControllerHarness()
-        h.controller.state = RobotState.CLIMB_BACKWARD
-        h.controller.state_entered = h.clock()
-        h.controller.match_started = True
-        h.controller.match_start_time = h.clock()
-        command = h.step(ir={6: 800}, gray=(100, 100), digital=(0, 0, 0))
-        self.assertEqual(h.controller.state, RobotState.FENCE_ESCAPE)
-        self.assertEqual(command.label, "climb-fence-stop")
+    def test_rear_high_object_preempts_climb_states_as_fence(self):
+        for state in (RobotState.STARTUP_CLIMB, RobotState.CLIMB_BACKWARD):
+            with self.subTest(state=state):
+                h = ControllerHarness()
+                h.controller.state = state
+                h.controller.state_entered = h.clock()
+                h.controller.match_started = True
+                h.controller.match_start_time = h.clock()
+                command = h.step(
+                    ir={6: 800},
+                    gray=(100, 100),
+                    digital=(0, 0, 0),
+                )
+                self.assertEqual(h.controller.state, RobotState.FENCE_ESCAPE)
+                self.assertEqual(command.label, "climb-fence-stop")
 
     def test_harmful_color_is_avoided_after_multiple_votes(self):
         h = ControllerHarness()

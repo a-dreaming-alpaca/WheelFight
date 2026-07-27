@@ -122,7 +122,9 @@ void setup() {
 
   analogReference(DEFAULT);
   Serial.begin(SERIAL_BAUD);
-  delay(300);
+  // Keep reboot recovery short for the temporary video-demonstration setup.
+  // Frames are periodic, so it is harmless if the host misses the first few.
+  delay(50);
   next_sample_us = micros();
 }
 

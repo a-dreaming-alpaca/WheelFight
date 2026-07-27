@@ -56,8 +56,8 @@ class MotionControllerTests(unittest.TestCase):
 
         mode_calls = [call for call in uptech.calls if call[0] == "mode"]
         self.assertEqual(mode_calls, [("mode", 5, 0), ("mode", 6, 0)])
-        self.assertIn(("speed", 2, 400), uptech.calls)
-        self.assertIn(("speed", 1, -500), uptech.calls)
+        self.assertIn(("speed", 1, 400), uptech.calls)
+        self.assertIn(("speed", 2, -500), uptech.calls)
 
     def test_shovel_uses_ids_five_and_six_when_interlock_enabled(self):
         uptech = FakeUpTech()

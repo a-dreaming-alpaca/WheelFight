@@ -12,6 +12,7 @@ from mega_sensor_reader import (  # noqa: E402
     FrameFormatError,
     MegaSensorReader,
     SensorFrame,
+    _accumulate_serial_line,
     crc16_ccitt_false,
     encode_frame,
     parse_frame,
@@ -72,6 +73,57 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaises(FrameFormatError):
             parse_frame(raw)
 
+    def test_incomplete_read_is_accumulated_until_newline(self):
+        raw = encode_frame(42, 123456, self.analog, self.digital)
+        pending = bytearray()
+
+        complete, error = _accumulate_serial_line(
+            pending,
+            raw[:17],
+            256,
+        )
+        self.assertIsNone(complete)
+        self.assertIsNone(error)
+        self.assertEqual(bytes(pending), raw[:17])
+
+        complete, error = _accumulate_serial_line(
+            pending,
+            raw[17:],
+            256,
+        )
+        self.assertEqual(complete, raw)
+        self.assertIsNone(error)
+        self.assertEqual(pending, bytearray())
+
+    def test_reboot_prefix_recovers_first_complete_new_frame(self):
+        new_frame = encode_frame(0, 0, self.analog, self.digital)
+        pending = bytearray(b"WF1,41,123")
+
+        complete, error = _accumulate_serial_line(
+            pending,
+            new_frame,
+            256,
+        )
+
+        self.assertEqual(complete, new_frame)
+        self.assertEqual(
+            error,
+            "discarded incomplete bytes before frame prefix",
+        )
+
+    def test_oversized_line_is_discarded_without_sticking_accumulator(self):
+        pending = bytearray()
+
+        complete, error = _accumulate_serial_line(
+            pending,
+            b"x" * 256,
+            256,
+        )
+
+        self.assertIsNone(complete)
+        self.assertEqual(error, "oversized serial line")
+        self.assertEqual(pending, bytearray())
+
 
 class ReaderStateTests(unittest.TestCase):
     @staticmethod
@@ -95,6 +147,33 @@ class ReaderStateTests(unittest.TestCase):
         self.assertAlmostEqual(status["rate_hz"], 50.0)
         self.assertFalse(reader.is_stale(now=1.21))
         self.assertTrue(reader.is_stale(now=1.23))
+
+    def test_disconnect_retains_latest_valid_frame_for_bounded_hold(self):
+        reader = MegaSensorReader(stale_after=0.2)
+        frame = self.frame(10, 1.00)
+        reader._record_valid(frame)
+
+        reader._set_disconnected("simulated USB power loss")
+
+        self.assertIs(reader.latest_frame(), frame)
+        self.assertFalse(reader.status()["connected"])
+        self.assertEqual(
+            reader.status()["last_error"],
+            "simulated USB power loss",
+        )
+
+    def test_reconnect_sequence_baseline_accepts_mega_counter_reset(self):
+        reader = MegaSensorReader(stale_after=0.2)
+        reader._record_valid(self.frame(500, 1.00))
+
+        # _run clears this baseline each time it successfully opens the USB
+        # serial device. A rebooted Mega then normally starts again at zero.
+        reader._last_sequence = None
+        reader._record_valid(self.frame(0, 2.00))
+
+        status = reader.status()
+        self.assertEqual(status["dropped_frames"], 0)
+        self.assertEqual(status["out_of_order_frames"], 0)
 
 
 if __name__ == "__main__":

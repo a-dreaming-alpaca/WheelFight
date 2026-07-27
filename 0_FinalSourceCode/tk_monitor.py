@@ -126,7 +126,13 @@ HTML_PAGE = """<!doctype html>
       ['帧率/Hz', at(data, 'sensor_link.rate_hz')], ['序号', at(data, 'sensor.sequence')],
       ['有效帧', at(data, 'sensor_link.valid_frames')], ['坏帧', at(data, 'sensor_link.invalid_frames')],
       ['CRC 错误', at(data, 'sensor_link.checksum_errors')], ['丢帧', at(data, 'sensor_link.dropped_frames')],
-      ['重复帧', at(data, 'sensor_link.duplicate_frames')], ['串口错误', at(data, 'sensor_link.last_error')]
+      ['重复帧', at(data, 'sensor_link.duplicate_frames')], ['重连次数', at(data, 'sensor_link.reconnects')],
+      ['视频保航已启用', at(data, 'sensor_continuity.video_mode_enabled')],
+      ['正在保持末次命令', at(data, 'sensor_continuity.holding_last_command')],
+      ['保持剩余/s', at(data, 'sensor_continuity.hold_remaining')],
+      ['恢复有效帧', `${at(data, 'sensor_continuity.resume_frames')}/${at(data, 'sensor_continuity.resume_frames_required')}`],
+      ['保持事件数', at(data, 'sensor_continuity.hold_events')],
+      ['串口错误', at(data, 'sensor_link.last_error')]
     ]);
     renderRows('vision', [
       ['分类', at(data, 'vision.classification')], ['黄绿色占比', at(data, 'vision.gain_color_ratio')],

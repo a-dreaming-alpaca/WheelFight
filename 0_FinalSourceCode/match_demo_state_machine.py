@@ -11,7 +11,7 @@ from enum import Enum
 from typing import Optional
 
 from energy_vision import ColorEnergyDetector, EnergyClass, VisionResult
-from mega_sensor_reader import MegaSensorReader
+from mega_sensor_reader import MegaSensorReader, SensorFrame
 from motion_controller import DriveCommand, MotionController
 from perception import (
     PerceptionEngine,
@@ -23,6 +23,7 @@ from robot_config import DEFAULT_CONFIG, RobotConfig
 
 
 IR_SENSOR_COUNT = 12
+REAR_HIGH_DIGITAL_INDEX = 2
 
 
 class RobotState(str, Enum):
@@ -30,6 +31,7 @@ class RobotState(str, Enum):
     WAIT_START_GESTURE = "WAIT_START_GESTURE"
     DEPLOY_SHOVEL = "DEPLOY_SHOVEL"
 
+    STARTUP_CLIMB = "STARTUP_CLIMB"
     GROUND_SEARCH = "GROUND_SEARCH"
     ALIGN_REAR = "ALIGN_REAR"
     VERIFY_PLATFORM = "VERIFY_PLATFORM"
@@ -52,6 +54,7 @@ class RobotState(str, Enum):
 
 
 GROUND_STATES = {
+    RobotState.STARTUP_CLIMB,
     RobotState.GROUND_SEARCH,
     RobotState.ALIGN_REAR,
     RobotState.VERIFY_PLATFORM,
@@ -140,7 +143,17 @@ class MatchController:
         self._avoid_turn_sign = 1
         self._next_avoid_turn_sign = 1
         self._climb_seen_rear_on = False
+        self._startup_climb_fault_latched = False
         self._fault_started = now
+        self._sensor_hold_active = False
+        self._sensor_hold_command = DriveCommand()
+        self._sensor_hold_started: Optional[float] = None
+        self._sensor_hold_deadline: Optional[float] = None
+        self._sensor_hold_source_received: Optional[float] = None
+        self._sensor_resume_last_received: Optional[float] = None
+        self._sensor_resume_frames = 0
+        self._sensor_recovery_perception_reset = False
+        self._sensor_hold_events = 0
         self._last_feature_signature = None
         self._feature_changed_at = now
         self._last_status_publish = 0.0
@@ -209,14 +222,36 @@ class MatchController:
     def step_once(self, now: Optional[float] = None) -> DriveCommand:
         if now is None:
             now = self.clock()
+
+        match_end_command = self._evaluate_match_end(now)
+        if match_end_command is not None:
+            return self._finish_step(match_end_command, now)
+
         frame = self.sensor_reader.latest_frame()
         if frame is None:
+            startup_climb_command = self._evaluate_startup_climb_deadline(now)
+            if startup_climb_command is not None:
+                return self._finish_step(startup_climb_command, now)
             command = self._handle_missing_sensor(now)
             return self._finish_step(command, now)
+
+        self._prepare_sensor_recovery_frame(frame, now)
 
         perception = self.perception.update(frame, now)
         self.last_perception = perception
         self.last_vision = self.vision_detector.latest_result()
+
+        startup_climb_command = self._evaluate_startup_climb_deadline(
+            now, perception
+        )
+        if startup_climb_command is not None:
+            return self._finish_step(startup_climb_command, now)
+
+        hold_command = self._evaluate_video_sensor_continuity(
+            frame, perception, now
+        )
+        if hold_command is not None:
+            return self._finish_step(hold_command, now)
 
         preempt_command = self._evaluate_safety_preemption(perception, now)
         if preempt_command is not None:
@@ -236,9 +271,254 @@ class MatchController:
     # Safety supervisor
     # ------------------------------------------------------------------
     def _handle_missing_sensor(self, now: float) -> DriveCommand:
+        if self._sensor_hold_active:
+            if (
+                self._sensor_hold_deadline is not None
+                and now < self._sensor_hold_deadline
+            ):
+                return self._video_sensor_hold_command()
+            return self._expire_video_sensor_hold(now)
+
+        if self.last_perception is not None:
+            sensor_age = max(
+                0.0,
+                now - self.last_perception.received_monotonic,
+            )
+            if (
+                sensor_age > self.config.timing.sensor_stop_after
+                and self._video_sensor_hold_allowed()
+                and sensor_age <= self.config.timing.video_demo_sensor_hold_time
+            ):
+                if not self._sensor_hold_active:
+                    self._begin_video_sensor_hold(
+                        now,
+                        self.last_perception.received_monotonic,
+                    )
+                return self._video_sensor_hold_command()
+
+        self._abort_video_sensor_hold()
         if self.state != RobotState.BOOT_SELF_CHECK:
             self._transition(RobotState.FAULT_STOP, "no Mega sensor frame", now)
         return DriveCommand(label="sensor-missing-stop")
+
+    def _evaluate_match_end(self, now: float) -> Optional[DriveCommand]:
+        timing = self.config.timing
+        if (
+            self.match_started
+            and self.match_start_time is not None
+            and now - self.match_start_time >= timing.match_duration
+        ):
+            if self.state != RobotState.MATCH_END:
+                self._abort_video_sensor_hold()
+                self._transition(
+                    RobotState.MATCH_END,
+                    f"{timing.match_duration:g} second match end",
+                    now,
+                )
+            return DriveCommand(label="match-end-stop")
+        return None
+
+    def _evaluate_startup_climb_deadline(
+        self,
+        now: float,
+        p: Optional[PerceptionSnapshot] = None,
+    ) -> Optional[DriveCommand]:
+        if (
+            self.state != RobotState.STARTUP_CLIMB
+            or self._state_elapsed(now)
+            < self.config.timing.startup_climb_time
+        ):
+            return None
+
+        # This state is intentionally open-loop, but its configured duration is
+        # a hard motor deadline. A Mega outage must not let the temporary
+        # last-command hold extend the full-speed reverse action.
+        self._abort_video_sensor_hold()
+        if (
+            p is not None
+            and p.sensor_age <= self.config.timing.sensor_warning_after
+            and (
+                p.rear_high_object
+                or p.raw_digital[REAR_HIGH_DIGITAL_INDEX] == 0
+            )
+        ):
+            self._transition(
+                RobotState.FENCE_ESCAPE,
+                "high rear object at startup climb deadline",
+                now,
+            )
+            return DriveCommand(label="startup-climb-deadline-fence-stop")
+
+        self._transition(
+            RobotState.CLIMB_CLEAR_EDGE,
+            "fixed-time startup climb complete",
+            now,
+        )
+        return DriveCommand(label="startup-climb-complete-stop")
+
+    def _video_sensor_hold_allowed(self) -> bool:
+        return (
+            self.config.timing.video_demo_sensor_hold_enabled
+            and self.match_started
+            and self.last_perception is not None
+            and self.state not in (RobotState.FAULT_STOP, RobotState.MATCH_END)
+        )
+
+    def _prepare_sensor_recovery_frame(
+        self,
+        frame: SensorFrame,
+        now: float,
+    ) -> None:
+        if (
+            not self._sensor_hold_active
+            or self._sensor_hold_source_received is None
+            or frame.received_monotonic
+            == self._sensor_hold_source_received
+            or now - frame.received_monotonic
+            > self.config.timing.sensor_warning_after
+        ):
+            return
+
+        if (
+            self._sensor_resume_last_received is not None
+            and frame.received_monotonic
+            - self._sensor_resume_last_received
+            > self.config.timing.sensor_warning_after
+        ):
+            self._sensor_resume_frames = 0
+            self._sensor_resume_last_received = None
+            self._sensor_recovery_perception_reset = False
+
+        if not self._sensor_recovery_perception_reset:
+            # A rebooted Mega can restart its sequence counter at a value equal
+            # to the last pre-outage frame. Resetting also prevents old
+            # filtering/confirmation evidence from crossing a broken streak.
+            self.perception.reset()
+            self._sensor_recovery_perception_reset = True
+
+    def _evaluate_video_sensor_continuity(
+        self,
+        frame: SensorFrame,
+        p: PerceptionSnapshot,
+        now: float,
+    ) -> Optional[DriveCommand]:
+        timing = self.config.timing
+
+        if self._sensor_hold_active:
+            if (
+                self._sensor_hold_deadline is None
+                or now >= self._sensor_hold_deadline
+            ):
+                return self._expire_video_sensor_hold(now)
+
+            if p.sensor_age > timing.sensor_warning_after:
+                self._sensor_resume_frames = 0
+                self._sensor_resume_last_received = None
+                self._sensor_recovery_perception_reset = False
+                return self._video_sensor_hold_command()
+
+            if frame.received_monotonic != self._sensor_resume_last_received:
+                self._sensor_resume_last_received = frame.received_monotonic
+                self._sensor_resume_frames += 1
+
+            # The two front digital edge inputs assert immediately. Do not
+            # continue a latched forward command merely to finish the normal
+            # multi-frame recovery gate.
+            if (
+                self.state in ARENA_STATES
+                and (p.front_left_edge or p.front_right_edge)
+            ):
+                self._complete_video_sensor_hold(now)
+                self._edge_pattern = (
+                    p.front_left_edge,
+                    p.front_right_edge,
+                )
+                self._transition(
+                    RobotState.EDGE_RECOVER,
+                    "front edge detected while Mega link recovered",
+                    now,
+                )
+                return DriveCommand(label="sensor-resume-edge-stop")
+
+            required = max(1, int(timing.video_demo_sensor_resume_frames))
+            if self._sensor_resume_frames < required:
+                return self._video_sensor_hold_command()
+
+            self._complete_video_sensor_hold(now)
+            return None
+
+        if p.sensor_age <= timing.sensor_stop_after:
+            return None
+        if not self._video_sensor_hold_allowed():
+            return None
+        if p.sensor_age > timing.video_demo_sensor_hold_time:
+            return None
+
+        self._begin_video_sensor_hold(now, frame.received_monotonic)
+        return self._video_sensor_hold_command()
+
+    def _begin_video_sensor_hold(
+        self,
+        now: float,
+        source_received_monotonic: float,
+    ) -> None:
+        self._sensor_hold_active = True
+        self._sensor_hold_command = self.last_command
+        self._sensor_hold_started = now
+        self._sensor_hold_deadline = (
+            source_received_monotonic
+            + self.config.timing.video_demo_sensor_hold_time
+        )
+        self._sensor_hold_source_received = source_received_monotonic
+        self._sensor_resume_last_received = None
+        self._sensor_resume_frames = 0
+        self._sensor_recovery_perception_reset = False
+        self._sensor_hold_events += 1
+        self._condition_since.clear()
+        # Classification evidence must not bridge a blind interval.
+        self._vision_votes.clear()
+        self._last_vision_vote_timestamp = None
+
+    def _video_sensor_hold_command(self) -> DriveCommand:
+        command = self._sensor_hold_command
+        return DriveCommand(
+            command.left_speed,
+            command.right_speed,
+            f"video-sensor-hold:{command.label}",
+        )
+
+    def _complete_video_sensor_hold(self, now: float) -> None:
+        # The held command was physically executing throughout the outage, so
+        # open-loop state time must not be rewound or the action would be
+        # repeated. Only evidence/watchdog timers restart from fresh data.
+        self._condition_since.clear()
+        self._target_last_seen = now
+        self._feature_changed_at = now
+        self._clear_video_sensor_hold()
+
+    def _expire_video_sensor_hold(self, now: float) -> DriveCommand:
+        self._abort_video_sensor_hold()
+        self.perception.reset()
+        if self.state != RobotState.FAULT_STOP:
+            self._transition(
+                RobotState.FAULT_STOP,
+                "video sensor hold expired before stable recovery",
+                now,
+            )
+        return DriveCommand(label="video-sensor-hold-timeout-stop")
+
+    def _abort_video_sensor_hold(self) -> None:
+        self._clear_video_sensor_hold()
+
+    def _clear_video_sensor_hold(self) -> None:
+        self._sensor_hold_active = False
+        self._sensor_hold_command = DriveCommand()
+        self._sensor_hold_started = None
+        self._sensor_hold_deadline = None
+        self._sensor_hold_source_received = None
+        self._sensor_resume_last_received = None
+        self._sensor_resume_frames = 0
+        self._sensor_recovery_perception_reset = False
 
     def _evaluate_safety_preemption(
         self, p: PerceptionSnapshot, now: float
@@ -252,19 +532,6 @@ class MatchController:
                     now,
                 )
             return DriveCommand(label="sensor-stale-stop")
-
-        if (
-            self.match_started
-            and self.match_start_time is not None
-            and now - self.match_start_time >= timing.match_duration
-        ):
-            if self.state != RobotState.MATCH_END:
-                self._transition(
-                    RobotState.MATCH_END,
-                    f"{timing.match_duration:g} second match end",
-                    now,
-                )
-            return DriveCommand(label="match-end-stop")
 
         if self.state in (RobotState.FAULT_STOP, RobotState.MATCH_END):
             return None
@@ -284,6 +551,7 @@ class MatchController:
             return DriveCommand(label="climb-prepare-already-on-stop")
 
         if self.state in (
+            RobotState.STARTUP_CLIMB,
             RobotState.CLIMB_PREPARE,
             RobotState.CLIMB_BACKWARD,
         ) and p.rear_high_object:
@@ -341,6 +609,7 @@ class MatchController:
             RobotState.BOOT_SELF_CHECK: self._step_boot,
             RobotState.WAIT_START_GESTURE: self._step_wait_start_gesture,
             RobotState.DEPLOY_SHOVEL: self._step_deploy_shovel,
+            RobotState.STARTUP_CLIMB: self._step_startup_climb,
             RobotState.GROUND_SEARCH: self._step_ground_search,
             RobotState.ALIGN_REAR: self._step_align_rear,
             RobotState.VERIFY_PLATFORM: self._step_verify_platform,
@@ -385,15 +654,22 @@ class MatchController:
 
     def _step_deploy_shovel(self, p, vision, now) -> DriveCommand:
         if self._state_elapsed(now) >= self.config.timing.shovel_settle_time:
-            if p.platform_state == PlatformState.ON:
-                self._transition(RobotState.ARENA_SEARCH, "started on platform", now)
-            else:
-                self._transition(RobotState.GROUND_SEARCH, "begin platform search", now)
+            self._transition(
+                RobotState.STARTUP_CLIMB,
+                "startup pose ready for fixed-time rear climb",
+                now,
+            )
         return DriveCommand(label="shovel-settle")
 
     # ------------------------------------------------------------------
     # Ground and climbing states
     # ------------------------------------------------------------------
+    def _step_startup_climb(self, p, vision, now) -> DriveCommand:
+        # Startup-area grayscale readings are known to resemble the platform,
+        # so this one-shot state deliberately ignores platform_state.
+        speed = self.config.motion.climb_speed
+        return DriveCommand(-speed, -speed, "startup-climb-backward")
+
     def _step_ground_search(self, p, vision, now) -> DriveCommand:
         if p.platform_state == PlatformState.ON:
             self._transition(
@@ -804,14 +1080,24 @@ class MatchController:
         return DriveCommand(label="partial-unknown-stop")
 
     def _step_fault_stop(self, p, vision, now) -> DriveCommand:
+        if self._startup_climb_fault_latched:
+            # The start surface and platform are indistinguishable to the
+            # grayscale sensors. After an interrupted one-shot climb, automatic
+            # mode selection could therefore begin arena motion while still on
+            # the ground. Keep the robot stopped until the program is restarted.
+            return DriveCommand(label="startup-climb-fault-latched-stop")
+
         healthy = (
             p.sensor_age <= self.config.timing.sensor_warning_after
             and p.platform_state != PlatformState.UNKNOWN
         )
+        recover_time = self.config.timing.fault_recover_time
+        if self.config.timing.video_demo_sensor_hold_enabled:
+            recover_time = self.config.timing.video_demo_fault_recover_time
         if self._held(
             "fault-healthy",
             healthy,
-            self.config.timing.fault_recover_time,
+            recover_time,
             now,
         ):
             if not self.match_started:
@@ -832,6 +1118,7 @@ class MatchController:
     # Helpers
     # ------------------------------------------------------------------
     def _transition(self, state: RobotState, reason: str, now: float) -> None:
+        previous_state = self.state
         entering_avoid = (
             state == RobotState.AVOID_BLOCK and self.state != RobotState.AVOID_BLOCK
         )
@@ -855,7 +1142,11 @@ class MatchController:
             self._target_last_seen = now
         if state == RobotState.CLIMB_BACKWARD:
             self._climb_seen_rear_on = False
+        if state == RobotState.STARTUP_CLIMB:
+            self._startup_climb_fault_latched = False
         if state == RobotState.FAULT_STOP:
+            if previous_state == RobotState.STARTUP_CLIMB:
+                self._startup_climb_fault_latched = True
             self._fault_started = now
         self._publish_status(force=True)
 
@@ -937,6 +1228,7 @@ class MatchController:
     def _status_snapshot(self) -> dict:
         p = self.last_perception
         vision = self.last_vision
+        now = self.clock()
         sensor_link = {}
         reader_status = getattr(self.sensor_reader, "status", None)
         if callable(reader_status):
@@ -955,7 +1247,21 @@ class MatchController:
 
         match_elapsed = None
         if self.match_started and self.match_start_time is not None:
-            match_elapsed = self.clock() - self.match_start_time
+            match_elapsed = now - self.match_start_time
+        sensor_age = (
+            max(0.0, now - p.received_monotonic)
+            if p is not None
+            else None
+        )
+        sensor_hold_remaining = None
+        if (
+            self._sensor_hold_active
+            and self._sensor_hold_deadline is not None
+        ):
+            sensor_hold_remaining = max(
+                0.0,
+                self._sensor_hold_deadline - now,
+            )
         status = {
             "timestamp": self.wall_clock(),
             "state": self.state.value,
@@ -970,6 +1276,19 @@ class MatchController:
             },
             "shovel_pose": self.motion_controller.shovel_pose,
             "sensor_link": sensor_link,
+            "sensor_continuity": {
+                "video_mode_enabled": (
+                    self.config.timing.video_demo_sensor_hold_enabled
+                ),
+                "holding_last_command": self._sensor_hold_active,
+                "hold_limit": self.config.timing.video_demo_sensor_hold_time,
+                "hold_remaining": sensor_hold_remaining,
+                "resume_frames": self._sensor_resume_frames,
+                "resume_frames_required": (
+                    self.config.timing.video_demo_sensor_resume_frames
+                ),
+                "hold_events": self._sensor_hold_events,
+            },
             "vision_available": self.vision_available,
             "vision_backend": vision_backend,
             "vision": {
@@ -980,14 +1299,14 @@ class MatchController:
                 "red_x_score": vision.red_x_score,
                 "red_x_detected": vision.red_x_detected,
                 "red_x_angle_deg": vision.red_x_angle_deg,
-                "age": max(0.0, self.clock() - vision.timestamp),
+                "age": max(0.0, now - vision.timestamp),
                 "error": vision.error,
             },
         }
         if p is not None:
             status["sensor"] = {
                 "sequence": p.sequence,
-                "age": p.sensor_age,
+                "age": sensor_age,
                 "raw_analog": list(p.raw_analog),
                 "raw_digital": list(p.raw_digital),
                 "filtered_analog": list(p.filtered_analog),

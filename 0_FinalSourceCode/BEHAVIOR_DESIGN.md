@@ -176,14 +176,16 @@ A camera failure or invalid frame is `UNKNOWN`, not `NO_BLOCK_MARKER`.
 flowchart TD
     BOOT["BOOT / SELF_CHECK"] --> WAIT["WAIT_START"]
     WAIT --> DEPLOY["DEPLOY_SHOVEL"]
-    DEPLOY --> GROUND["OFF_PLATFORM"]
-    GROUND --> ALIGN["ALIGN_REAR"]
+    DEPLOY --> STARTUP["STARTUP_CLIMB"]
+    STARTUP -->|"fixed time complete"| CLEAR["CLIMB_CLEAR_EDGE"]
+    STARTUP -->|"high rear object"| FENCE["FENCE_ESCAPE"]
+    GROUND["OFF_PLATFORM"] --> ALIGN["ALIGN_REAR"]
     ALIGN --> VERIFY["VERIFY_PLATFORM"]
     VERIFY -->|"low obstacle"| PREPARE["CLIMB_PREPARE"]
-    VERIFY -->|"high obstacle"| FENCE["FENCE_ESCAPE"]
+    VERIFY -->|"high obstacle"| FENCE
     PREPARE -->|"run-up ready"| CLIMB["CLIMB_BACKWARD"]
     PREPARE -->|"high rear object"| FENCE
-    PREPARE -->|"already on platform"| CLEAR["CLIMB_CLEAR_EDGE"]
+    PREPARE -->|"already on platform"| CLEAR
     FENCE --> GROUND
     CLIMB --> CLEAR
     CLEAR --> ARENA["ON_PLATFORM"]
@@ -245,13 +247,36 @@ use remote driving.
 ### `DEPLOY_SHOVEL`
 
 After `START_EVENT`, lower both shovel servos using a timed, non-blocking action
-with a final hold position. Platform searching may begin while the shovel is
-settling only if the mechanism is mechanically safe to move simultaneously.
+with a final hold position. Drive motors remain stopped for the configured
+shovel settling time.
 
-After deployment, classify the initial platform state. The normal initial
-transition is to `OFF_PLATFORM.SEARCH_CANDIDATE`.
+The normal start position is placed manually with the rear ramp facing the
+platform and with sufficient acceleration distance. After deployment, the
+robot always enters the one-shot `STARTUP_CLIMB` state. It does not use the
+initial grayscale classification because the permitted start surface can
+produce the same reading as the platform. The full off-platform search and
+verification path remains available after a failed climb or a later fall.
 
 ## 7. Off-platform and climbing behavior
+
+### `STARTUP_CLIMB`
+
+This state is reachable only from `DEPLOY_SHOVEL`. It drives backward at
+`climb_speed` for exactly `startup_climb_time`, using the manually aligned rear
+ramp to mount the platform. Grayscale platform state is deliberately ignored
+for the entire high-speed interval, so a false on-platform reading at the
+starting point cannot skip the climb.
+
+The configured duration is a hard motor deadline checked before sensor-link
+continuity handling. At the deadline, full-speed reverse stops even if the
+temporary video-demo sensor hold is active. The controller then enters
+`CLIMB_CLEAR_EDGE`; match end, sensor-hold expiry, and a confirmed high rear
+object may still stop the action earlier.
+
+If a sensor fault interrupts this one-shot state before its deadline, automatic
+fault recovery is latched off. The start surface cannot be distinguished from
+the platform by grayscale, so the operator must restart the program rather
+than allow an ambiguous reading to select on-platform behavior.
 
 ### `SEARCH_CANDIDATE`
 
@@ -532,6 +557,30 @@ Enter for stale Mega frames, invalid safety data, or an explicit emergency stop.
 Command all four drive motors to zero. Do not leave until fresh data is stable
 and the recovery policy explicitly permits resuming.
 
+### Temporary video-demo sensor hold
+
+`TimingConfig.video_demo_sensor_hold_enabled` is a temporary, explicitly
+configured exception for recording the required function video while the
+sensor power supply is unavailable. After the match starts, a stale Mega link
+can hold the last applied motor command for at most
+`video_demo_sensor_hold_time`, measured from the last valid pre-outage frame;
+sporadic recovery frames cannot extend that absolute deadline. Behavior-state
+transitions are suspended while the command is held, but elapsed action time
+is not rewound because the motors were physically moving throughout the gap.
+A recovering link must provide the configured number of distinct fresh frames;
+perception filters are reset before a new recovery streak is accepted. A newly
+recovered front-edge signal preempts the held command immediately. The match
+timer remains active, and an outage beyond the bound still enters
+`FAULT_STOP`.
+
+`STARTUP_CLIMB` is the exception to held-command timing: its
+`startup_climb_time` deadline cancels any held full-speed reverse command and
+enters stopped post-climb clearance. A sensor outage can therefore delay safe
+follow-up behavior, but it cannot lengthen the initial high-speed reverse.
+
+This mode provides continuous motion, not continuous sensing. It must be
+disabled after the video is recorded.
+
 ### Camera degraded mode
 
 If the camera or detector is unavailable:
@@ -614,6 +663,8 @@ Keep these in a configuration file:
 - `climb_prepare_forward_time`: duration of that forward separation motion;
 - `climb_prepare_settle_time`: zero-speed dwell before changing to high-speed
   reverse;
+- `startup_climb_time`: one-shot fixed reverse duration after shovel
+  deployment; tune it for the manually aligned starting position;
 - climb timeout and expected front/rear grayscale transition timing;
 - post-climb clearance duration;
 - servo raised/lowered angles, speed, and settling time;
@@ -633,14 +684,16 @@ previous gate passes:
 4. Front/rear grayscale transition recovery at low speed.
 5. Ground candidate scan and rear alignment.
 6. Platform-versus-fence verification using rear ranging plus DI2.
-7. Low-speed platform probe, forward run-up preparation, then full-speed climb
+7. Fixed-time startup climb from the manually aligned pose, including its
+   hard motor deadline under simulated sensor loss.
+8. Low-speed platform probe, forward run-up preparation, then full-speed climb
    and interior clearance.
-8. On-platform moving search and target alignment.
-9. Central-ROI HSV color detector with recorded-video replay.
-10. Harmful/unknown avoidance.
-11. Gain-block push with edge preemption.
-12. Enemy attack with target-loss and edge/fall recovery.
-13. Communication loss, camera failure, USB reconnect, and 30-minute endurance
+9. On-platform moving search and target alignment.
+10. Central-ROI HSV color detector with recorded-video replay.
+11. Harmful/unknown avoidance.
+12. Gain-block push with edge preemption.
+13. Enemy attack with target-loss and edge/fall recovery.
+14. Communication loss, camera failure, USB reconnect, and 30-minute endurance
     tests.
 
 Every test log should contain raw sensors, filtered semantics, current state,

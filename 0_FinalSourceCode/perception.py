@@ -123,7 +123,7 @@ class PerceptionEngine:
         self._platform_state = PlatformState.UNKNOWN
         self._pending_platform_state = PlatformState.UNKNOWN
         self._pending_platform_count = 0
-        self._last_sequence: Optional[int] = None
+        self._last_frame_identity: Optional[tuple[int, int, float]] = None
         self._last_snapshot: Optional[PerceptionSnapshot] = None
 
     def reset(self) -> None:
@@ -134,14 +134,22 @@ class PerceptionEngine:
     ) -> PerceptionSnapshot:
         if now is None:
             now = time.monotonic()
-        if self._last_sequence == frame.sequence and self._last_snapshot is not None:
+        frame_identity = (
+            frame.sequence,
+            frame.mega_millis,
+            frame.received_monotonic,
+        )
+        if (
+            self._last_frame_identity == frame_identity
+            and self._last_snapshot is not None
+        ):
             self._last_snapshot = replace(
                 self._last_snapshot,
                 sensor_age=max(0.0, now - frame.received_monotonic),
             )
             return self._last_snapshot
 
-        self._last_sequence = frame.sequence
+        self._last_frame_identity = frame_identity
         for index, value in enumerate(frame.analog):
             self._analog_windows[index].append(value)
         filtered = tuple(

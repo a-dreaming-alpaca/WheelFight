@@ -99,17 +99,33 @@ class MotionConfig:
 @dataclass(frozen=True)
 class TimingConfig:
     control_period: float = 0.02
-    sensor_warning_after: float = 0.06
+    sensor_warning_after: float = 0.08
     sensor_stop_after: float = 0.10
     # Mega receiver thread timing; separate from the controller's stale-data
     # warning and emergency-stop thresholds above.
-    sensor_read_timeout: float = 0.10
-    sensor_reconnect_interval: float = 1.00
+    sensor_read_timeout: float = 0.05
+    sensor_reconnect_interval: float = 0.10
+
+    # TEMPORARY VIDEO-DEMO MODE.
+    #
+    # When enabled after the match has started, a short Mega outage freezes the
+    # behavior state and keeps the last motor command instead of visibly
+    # stopping the robot. The controller still stops after the bounded hold
+    # time. Disable this immediately after the required function video has been
+    # recorded; blind motion cannot provide edge or target protection.
+    video_demo_sensor_hold_enabled: bool = True
+    video_demo_sensor_hold_time: float = 1.50
+    video_demo_sensor_resume_frames: int = 3
+    video_demo_fault_recover_time: float = 0.08
+
     camera_stale_after: float = 0.25
     status_publish_interval: float = 0.10
     match_duration: float = 100000.0
 
     shovel_settle_time: float = 0.60
+    # One-shot open-loop reverse used only immediately after the start gesture.
+    # Tune on the real start layout; grayscale is intentionally ignored here.
+    startup_climb_time: float = 1.00
 
     ground_candidate_confirm: float = 0.10
     # Ignore a brief ranging dropout while turning a candidate toward A6.
@@ -133,8 +149,8 @@ class TimingConfig:
     push_timeout: float = 3.00
     # Provisional open-loop values: tune the turn for roughly 180 degrees,
     # then tune the forward phase far enough to leave the rejected target.
-    avoid_turn_time: float = 1.00
-    avoid_depart_time: float = 0.60
+    avoid_turn_time: float = 1.20
+    avoid_depart_time: float = 1.20
 
     edge_stop_time: float = 0.06
     edge_reverse_time: float = 0.28

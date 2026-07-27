@@ -20,6 +20,37 @@ DEFAULT_BAUDRATE = 115200
 DEFAULT_STALE_AFTER = 0.2
 
 
+def _accumulate_serial_line(
+    pending: bytearray,
+    chunk: bytes,
+    max_line_bytes: int,
+) -> tuple[Optional[bytes], Optional[str]]:
+    """Accumulate one newline-terminated frame without flushing later data."""
+    if not chunk:
+        return None, None
+
+    pending.extend(chunk)
+    if not pending.endswith(b"\n"):
+        if len(pending) >= max_line_bytes:
+            pending.clear()
+            return None, "oversized serial line"
+        return None, None
+
+    raw = bytes(pending)
+    pending.clear()
+
+    # A Mega reset can truncate one old frame immediately before the first
+    # complete reboot frame. The newest marker is safe to use because valid
+    # payload fields contain only unsigned decimal text.
+    latest_prefix = raw.rfind(b"WF1,")
+    if latest_prefix > 0:
+        return (
+            raw[latest_prefix:],
+            "discarded incomplete bytes before frame prefix",
+        )
+    return raw, None
+
+
 class FrameError(ValueError):
     """Base class for invalid sensor frames."""
 
@@ -405,14 +436,20 @@ class MegaSensorReader:
                     self._last_sequence = None
                     self._reconnects += 1
 
+                pending = bytearray()
                 while not self._stop_event.is_set():
-                    raw = connection.read_until(b"\n", self.max_line_bytes)
-                    if not raw:
+                    remaining = self.max_line_bytes - len(pending)
+                    chunk = connection.read_until(b"\n", remaining)
+                    raw, line_error = _accumulate_serial_line(
+                        pending,
+                        chunk,
+                        self.max_line_bytes,
+                    )
+                    if line_error:
+                        self._record_invalid(line_error)
+                    if raw is None:
                         continue
-                    if not raw.endswith(b"\n"):
-                        self._record_invalid("incomplete or oversized serial line")
-                        connection.reset_input_buffer()
-                        continue
+
                     try:
                         frame = parse_frame(raw, time.monotonic())
                     except FrameChecksumError as exc:
