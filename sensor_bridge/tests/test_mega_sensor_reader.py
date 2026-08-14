@@ -16,6 +16,7 @@ from mega_sensor_reader import (  # noqa: E402
     encode_frame,
     parse_frame,
 )
+from robot_config import DEFAULT_CONFIG  # noqa: E402
 
 
 class ProtocolTests(unittest.TestCase):
@@ -84,6 +85,16 @@ class ReaderStateTests(unittest.TestCase):
             received_monotonic=received_monotonic,
         )
 
+    def test_default_linux_sensor_timings_leave_scheduling_margin(self):
+        timing = DEFAULT_CONFIG.timing
+        reader = MegaSensorReader()
+
+        self.assertEqual(timing.sensor_warning_after, 0.10)
+        self.assertEqual(timing.sensor_stop_after, 0.20)
+        self.assertEqual(timing.sensor_read_timeout, 0.03)
+        self.assertEqual(reader.stale_after, 0.20)
+        self.assertEqual(reader.read_timeout, 0.03)
+
     def test_tracks_rate_drops_and_staleness(self):
         reader = MegaSensorReader(stale_after=0.2)
         reader._record_valid(self.frame(10, 1.00))
@@ -95,6 +106,127 @@ class ReaderStateTests(unittest.TestCase):
         self.assertAlmostEqual(status["rate_hz"], 50.0)
         self.assertFalse(reader.is_stale(now=1.21))
         self.assertTrue(reader.is_stale(now=1.23))
+
+    def test_partial_frame_survives_empty_reads_and_is_completed_later(self):
+        reader = MegaSensorReader()
+        raw = encode_frame(20, 400, (100,) * 14, (0, 1, 0))
+        split = len(raw) // 2
+
+        self.assertIsNone(reader._consume_serial_bytes(raw[:split], 1.0))
+        self.assertIsNone(reader._consume_serial_bytes(b"", 1.1))
+        self.assertEqual(reader.status()["invalid_frames"], 0)
+        self.assertIsNone(reader.latest_frame())
+
+        newest = reader._consume_serial_bytes(raw[split:], 1.2)
+
+        self.assertEqual(newest.sequence, 20)
+        self.assertEqual(reader.latest_frame().sequence, 20)
+        self.assertEqual(reader.status()["invalid_frames"], 0)
+
+    def test_reconnect_reset_prevents_old_partial_frame_from_splicing(self):
+        reader = MegaSensorReader()
+        old = encode_frame(21, 420, (100,) * 14, (0, 1, 0))
+        new = encode_frame(22, 440, (101,) * 14, (0, 1, 0))
+        split = len(old) // 2
+
+        self.assertIsNone(reader._consume_serial_bytes(old[:split], 1.3))
+        reader._reset_serial_buffer()
+        self.assertIsNone(reader._consume_serial_bytes(old[split:], 1.4))
+        self.assertIsNone(reader.latest_frame())
+
+        newest = reader._consume_serial_bytes(new, 1.5)
+
+        self.assertEqual(newest.sequence, 22)
+        self.assertEqual(reader.latest_frame().sequence, 22)
+
+    def test_backlog_updates_all_statistics_but_publishes_only_newest(self):
+        reader = MegaSensorReader()
+        backlog = b"".join(
+            encode_frame(sequence, sequence * 20, (sequence,) * 14, (1, 1, 1))
+            for sequence in (30, 31, 32)
+        )
+
+        newest = reader._consume_serial_bytes(backlog, 2.0)
+        status = reader.status()
+
+        self.assertEqual(newest.sequence, 32)
+        self.assertEqual(reader.latest_frame().sequence, 32)
+        self.assertEqual(status["valid_frames"], 3)
+        self.assertEqual(status["dropped_frames"], 0)
+        self.assertEqual(reader.get_frame(timeout=0).sequence, 32)
+        self.assertIsNone(reader.get_frame(timeout=0))
+
+    def test_bad_checksum_discards_only_that_line_before_valid_frame(self):
+        reader = MegaSensorReader()
+        damaged = bytearray(encode_frame(40, 800, (100,) * 14, (1, 1, 1)))
+        damaged[5] = ord("9")
+        good = encode_frame(41, 820, (101,) * 14, (1, 1, 1))
+
+        newest = reader._consume_serial_bytes(bytes(damaged) + good, 3.0)
+        status = reader.status()
+
+        self.assertEqual(newest.sequence, 41)
+        self.assertEqual(status["valid_frames"], 1)
+        self.assertEqual(status["invalid_frames"], 1)
+        self.assertEqual(status["checksum_errors"], 1)
+        self.assertEqual(status["last_error"], "")
+
+    def test_valid_frame_before_bad_line_is_published_without_hiding_error(self):
+        reader = MegaSensorReader()
+        good = encode_frame(45, 900, (101,) * 14, (1, 1, 1))
+        damaged = bytearray(encode_frame(46, 920, (102,) * 14, (1, 1, 1)))
+        damaged[5] = ord("9")
+
+        newest = reader._consume_serial_bytes(good + bytes(damaged), 3.5)
+        status = reader.status()
+
+        self.assertEqual(newest.sequence, 45)
+        self.assertEqual(reader.latest_frame().sequence, 45)
+        self.assertEqual(status["valid_frames"], 1)
+        self.assertEqual(status["invalid_frames"], 1)
+        self.assertEqual(status["checksum_errors"], 1)
+        self.assertIn("CRC mismatch", status["last_error"])
+
+    def test_oversized_line_resynchronizes_without_clearing_following_frame(self):
+        reader = MegaSensorReader(max_line_bytes=128)
+        good = encode_frame(50, 1000, (102,) * 14, (1, 1, 1))
+
+        self.assertIsNone(reader._consume_serial_bytes(b"x" * 128, 4.0))
+        self.assertEqual(reader.status()["invalid_frames"], 1)
+
+        newest = reader._consume_serial_bytes(b"discarded\n" + good, 4.1)
+        status = reader.status()
+
+        self.assertEqual(newest.sequence, 50)
+        self.assertEqual(status["invalid_frames"], 1)
+        self.assertEqual(status["valid_frames"], 1)
+        self.assertEqual(reader.latest_frame().sequence, 50)
+
+    def test_complete_oversized_line_does_not_hide_same_chunk_valid_frame(self):
+        reader = MegaSensorReader(max_line_bytes=128)
+        good = encode_frame(60, 1200, (103,) * 14, (1, 1, 1))
+
+        newest = reader._consume_serial_bytes(
+            b"x" * 129 + b"\n" + good,
+            5.0,
+        )
+        status = reader.status()
+
+        self.assertEqual(newest.sequence, 60)
+        self.assertEqual(status["invalid_frames"], 1)
+        self.assertEqual(status["valid_frames"], 1)
+
+    def test_sequence_gap_inside_one_backlog_is_counted(self):
+        reader = MegaSensorReader()
+        backlog = b"".join(
+            encode_frame(sequence, sequence * 20, (100,) * 14, (1, 1, 1))
+            for sequence in (70, 72)
+        )
+
+        reader._consume_serial_bytes(backlog, 6.0)
+
+        self.assertEqual(reader.status()["dropped_frames"], 1)
+        self.assertEqual(reader.latest_frame().sequence, 72)
 
 
 if __name__ == "__main__":

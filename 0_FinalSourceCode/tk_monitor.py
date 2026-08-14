@@ -124,7 +124,7 @@ HTML_PAGE = """<!doctype html>
     ]);
     renderRows('link', [
       ['端口', at(data, 'sensor_link.port')], ['已连接', at(data, 'sensor_link.connected')],
-      ['帧率/Hz', at(data, 'sensor_link.rate_hz')], ['序号', at(data, 'sensor.sequence')],
+      ['接收更新率/Hz', at(data, 'sensor_link.rate_hz')], ['序号', at(data, 'sensor.sequence')],
       ['有效帧', at(data, 'sensor_link.valid_frames')], ['坏帧', at(data, 'sensor_link.invalid_frames')],
       ['CRC 错误', at(data, 'sensor_link.checksum_errors')], ['丢帧', at(data, 'sensor_link.dropped_frames')],
       ['重复帧', at(data, 'sensor_link.duplicate_frames')], ['串口错误', at(data, 'sensor_link.last_error')]

@@ -152,6 +152,9 @@ class ColorEnergyDetector:
         # Fail before starting the thread if dependencies are absent, so the
         # controller can deliberately select degraded mode.
         self._load_dependencies()
+        # Build every rotation-region map before the match loop starts. The
+        # first real red candidate must not pay this pure-Python cache cost.
+        self._prewarm_red_x_grid_regions()
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._run, name="energy-vision", daemon=True
@@ -494,6 +497,28 @@ class ColorEnergyDetector:
 
         return tuple(tuple(region) for region in region_indices)
 
+    @staticmethod
+    def _red_x_search_angles(angle_step_deg: float) -> tuple[float, ...]:
+        # Keep this sampling definition shared by prewarming and matching so
+        # their floating-point cache keys are exactly identical.
+        step = max(1.0, min(15.0, float(angle_step_deg)))
+        angles = []
+        angle = 0.0
+        while angle < 90.0:
+            angles.append(angle)
+            angle += step
+        return tuple(angles)
+
+    def _prewarm_red_x_grid_regions(self) -> None:
+        config = self.config
+        for angle in self._red_x_search_angles(config.red_x_angle_step_deg):
+            self._red_x_grid_regions(
+                RED_X_GRID_SIZE,
+                config.red_x_diagonal_band_ratio,
+                config.red_x_center_size_ratio,
+                angle,
+            )
+
     @classmethod
     def _best_red_x_grid_match(
         cls,
@@ -508,13 +533,11 @@ class ColorEnergyDetector:
         # A coarser step can leave a cross too far from every sampled angle
         # and defeat the rotation-independent contract. Keep the tunable
         # search within a range that still has ample score margin.
-        step = max(1.0, min(15.0, float(angle_step_deg)))
         best_score = 0.0
         best_angle = 0.0
         best_fills = (0.0,) * 8
         best_key = (-1.0, -1.0, -1.0, -1.0)
-        angle = 0.0
-        while angle < 90.0:
+        for angle in cls._red_x_search_angles(angle_step_deg):
             fills = cls._red_x_grid_fills(
                 grid_bytes,
                 grid_size,
@@ -530,7 +553,6 @@ class ColorEnergyDetector:
                 best_angle = angle
                 best_fills = fills
                 best_key = key
-            angle += step
         return best_score, best_angle, best_fills
 
     @staticmethod

@@ -19,6 +19,9 @@ class StatusReaderTests(unittest.TestCase):
         self.assertIn("DISABLED", HTML_PAGE)
         self.assertIn("raw[i]", HTML_PAGE)
 
+    def test_page_labels_receiver_publish_rate_as_update_rate(self):
+        self.assertIn("接收更新率/Hz", HTML_PAGE)
+
     def test_reads_controller_status_without_opening_hardware(self):
         with tempfile.TemporaryDirectory() as directory:
             status_path = Path(directory) / "match_status.json"

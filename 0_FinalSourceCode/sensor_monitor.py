@@ -84,7 +84,7 @@ def print_frame(frame: SensorFrame, status: dict) -> None:
     )
     print(
         f"seq={frame.sequence} mega={frame.mega_millis}ms "
-        f"port={status['port']} rate={status['rate_hz']:.1f}Hz "
+        f"port={status['port']} update_rate={status['rate_hz']:.1f}Hz "
         f"drop={status['dropped_frames']} bad={status['invalid_frames']}"
     )
     print(f"  {infrared}")

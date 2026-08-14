@@ -104,11 +104,14 @@ class MotionConfig:
 @dataclass(frozen=True)
 class TimingConfig:
     control_period: float = 0.02
-    sensor_warning_after: float = 0.06
-    sensor_stop_after: float = 0.10
+    # Mega normally publishes every 20 ms. Fault recovery requires frames no
+    # older than five periods; the hard safety stop allows ten missed periods
+    # so a brief Linux scheduling spike does not look like a USB disconnect.
+    sensor_warning_after: float = 0.10
+    sensor_stop_after: float = 0.20
     # Mega receiver thread timing; separate from the controller's stale-data
     # warning and emergency-stop thresholds above.
-    sensor_read_timeout: float = 0.10
+    sensor_read_timeout: float = 0.03
     sensor_reconnect_interval: float = 1.00
     camera_stale_after: float = 0.25
     status_publish_interval: float = 0.10

@@ -18,6 +18,7 @@ EXPECTED_FIELD_COUNT = 3 + ANALOG_CHANNEL_COUNT + DIGITAL_CHANNEL_COUNT
 MAX_UINT32 = 0xFFFFFFFF
 DEFAULT_BAUDRATE = 115200
 DEFAULT_STALE_AFTER = 0.2
+DEFAULT_READ_TIMEOUT = 0.03
 
 
 class FrameError(ValueError):
@@ -229,7 +230,7 @@ class MegaSensorReader:
         port: Optional[str] = None,
         baudrate: int = DEFAULT_BAUDRATE,
         stale_after: float = DEFAULT_STALE_AFTER,
-        read_timeout: float = 0.1,
+        read_timeout: float = DEFAULT_READ_TIMEOUT,
         reconnect_interval: float = 1.0,
         frame_queue_size: int = 256,
         max_line_bytes: int = 256,
@@ -257,6 +258,8 @@ class MegaSensorReader:
         self._connected_port: Optional[str] = None
         self._last_error = "not started"
         self._last_sequence: Optional[int] = None
+        self._serial_buffer = bytearray()
+        self._discarding_oversized_line = False
 
         self._valid_frames = 0
         self._invalid_frames = 0
@@ -404,24 +407,14 @@ class MegaSensorReader:
                     self._last_error = ""
                     self._last_sequence = None
                     self._reconnects += 1
+                self._reset_serial_buffer()
 
                 while not self._stop_event.is_set():
-                    raw = connection.read_until(b"\n", self.max_line_bytes)
-                    if not raw:
+                    waiting = connection.in_waiting
+                    chunk = connection.read(max(1, waiting))
+                    if not chunk:
                         continue
-                    if not raw.endswith(b"\n"):
-                        self._record_invalid("incomplete or oversized serial line")
-                        connection.reset_input_buffer()
-                        continue
-                    try:
-                        frame = parse_frame(raw, time.monotonic())
-                    except FrameChecksumError as exc:
-                        self._record_invalid(str(exc), checksum=True)
-                        continue
-                    except FrameError as exc:
-                        self._record_invalid(str(exc))
-                        continue
-                    self._record_valid(frame)
+                    self._consume_serial_bytes(chunk, time.monotonic())
             except Exception as exc:
                 if not self._stop_event.is_set():
                     self._set_disconnected(
@@ -440,30 +433,128 @@ class MegaSensorReader:
 
             self._stop_event.wait(self.reconnect_interval)
 
-    def _record_valid(self, frame: SensorFrame) -> None:
-        with self._lock:
-            if self._last_sequence is not None:
-                delta = (frame.sequence - self._last_sequence) & MAX_UINT32
-                if delta == 0:
-                    self._duplicate_frames += 1
-                elif delta < 0x80000000:
-                    self._dropped_frames += max(0, delta - 1)
+    def _reset_serial_buffer(self) -> None:
+        self._serial_buffer.clear()
+        self._discarding_oversized_line = False
+
+    def _consume_serial_bytes(
+        self,
+        data: bytes,
+        received_monotonic: Optional[float] = None,
+    ) -> Optional[SensorFrame]:
+        """Consume an arbitrary serial chunk and publish its newest valid frame.
+
+        USB reads are not frame boundaries. A trailing partial line stays in
+        the connection-local buffer until a later read supplies its newline.
+        Complete invalid lines are discarded individually, while a batch of
+        accumulated valid lines updates statistics for every line but exposes
+        only the newest frame to control code.
+        """
+
+        if not data:
+            return None
+        if received_monotonic is None:
+            received_monotonic = time.monotonic()
+
+        chunk = bytes(data)
+        if self._discarding_oversized_line:
+            newline = chunk.find(b"\n")
+            if newline < 0:
+                return None
+            chunk = chunk[newline + 1 :]
+            self._discarding_oversized_line = False
+
+        self._serial_buffer.extend(chunk)
+        complete_lines: list[Optional[bytes]] = []
+        while True:
+            newline = self._serial_buffer.find(b"\n")
+            if newline >= 0:
+                line_length = newline + 1
+                raw = bytes(self._serial_buffer[:line_length])
+                del self._serial_buffer[:line_length]
+                if line_length > self.max_line_bytes:
+                    complete_lines.append(None)
                 else:
-                    self._out_of_order_frames += 1
-            self._last_sequence = frame.sequence
-            self._latest = frame
-            self._valid_frames += 1
-            self._receive_times.append(frame.received_monotonic)
-            self._last_error = ""
+                    complete_lines.append(raw)
+                continue
+
+            # The configured limit includes the eventual newline. Reaching it
+            # without a newline means this line can no longer be valid.
+            if len(self._serial_buffer) >= self.max_line_bytes:
+                self._serial_buffer.clear()
+                self._discarding_oversized_line = True
+                complete_lines.append(None)
+            break
+
+        valid_frames = []
+        last_line_was_valid = False
+        for raw in complete_lines:
+            if raw is None:
+                self._record_invalid("oversized serial line")
+                last_line_was_valid = False
+                continue
+            try:
+                frame = parse_frame(raw, received_monotonic)
+            except FrameChecksumError as exc:
+                self._record_invalid(str(exc), checksum=True)
+                last_line_was_valid = False
+                continue
+            except FrameError as exc:
+                self._record_invalid(str(exc))
+                last_line_was_valid = False
+                continue
+            valid_frames.append(frame)
+            last_line_was_valid = True
+
+        if not valid_frames:
+            return None
+        self._record_valid_batch(
+            valid_frames,
+            clear_error=last_line_was_valid,
+        )
+        return valid_frames[-1]
+
+    def _record_valid(self, frame: SensorFrame) -> None:
+        self._record_valid_batch((frame,))
+
+    def _record_valid_batch(
+        self,
+        frames: Iterable[SensorFrame],
+        clear_error: bool = True,
+    ) -> None:
+        frame_batch = tuple(frames)
+        if not frame_batch:
+            return
+
+        with self._lock:
+            for frame in frame_batch:
+                if self._last_sequence is not None:
+                    delta = (frame.sequence - self._last_sequence) & MAX_UINT32
+                    if delta == 0:
+                        self._duplicate_frames += 1
+                    elif delta < 0x80000000:
+                        self._dropped_frames += max(0, delta - 1)
+                    else:
+                        self._out_of_order_frames += 1
+                self._last_sequence = frame.sequence
+                self._valid_frames += 1
+            newest = frame_batch[-1]
+            self._latest = newest
+            # A backlog is deliberately collapsed to one control update. Keep
+            # the displayed rate tied to those published updates rather than
+            # reporting an artificial burst rate for old buffered frames.
+            self._receive_times.append(newest.received_monotonic)
+            if clear_error:
+                self._last_error = ""
 
         try:
-            self._frames.put_nowait(frame)
+            self._frames.put_nowait(newest)
         except queue.Full:
             try:
                 self._frames.get_nowait()
             except queue.Empty:
                 pass
-            self._frames.put_nowait(frame)
+            self._frames.put_nowait(newest)
             with self._lock:
                 self._queue_overruns += 1
 

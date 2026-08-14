@@ -3,6 +3,7 @@ import sys
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 
 sys.path.insert(
@@ -246,6 +247,55 @@ class ColorEnergyDetectorTests(unittest.TestCase):
             min_color_area_ratio=0.015,
         )
         self.detector = ColorEnergyDetector(config=self.config, clock=lambda: 123.0)
+
+    def test_start_prewarms_red_x_regions_before_worker_thread(self):
+        detector = ColorEnergyDetector(config=self.config, clock=lambda: 123.0)
+        events = []
+        detector._load_dependencies = Mock(
+            side_effect=lambda: events.append("dependencies")
+        )
+        detector._prewarm_red_x_grid_regions = Mock(
+            side_effect=lambda: events.append("prewarm")
+        )
+
+        with patch("energy_vision.threading.Thread") as thread_factory:
+            thread_factory.return_value.start.side_effect = lambda: events.append(
+                "worker"
+            )
+            detector.start()
+
+        self.assertEqual(events, ["dependencies", "prewarm", "worker"])
+
+    def test_red_x_region_prewarm_eliminates_first_match_cache_misses(self):
+        regions = self.detector._red_x_grid_regions
+        regions.cache_clear()
+        try:
+            self.detector._prewarm_red_x_grid_regions()
+            warmed = regions.cache_info()
+            expected_angles = len(
+                self.detector._red_x_search_angles(
+                    self.config.red_x_angle_step_deg
+                )
+            )
+            self.assertEqual(warmed.misses, expected_angles)
+            self.assertEqual(warmed.currsize, expected_angles)
+
+            self.detector._best_red_x_grid_match(
+                make_rotated_cross_grid(23.0),
+                GRID_SIZE,
+                self.config.red_x_diagonal_band_ratio,
+                self.config.red_x_center_size_ratio,
+                self.config.red_x_angle_step_deg,
+            )
+            matched = regions.cache_info()
+            self.assertEqual(matched.misses, warmed.misses)
+            self.assertEqual(matched.hits - warmed.hits, expected_angles)
+        finally:
+            regions.cache_clear()
+
+    def test_red_x_search_angles_share_clamped_step_limits(self):
+        self.assertEqual(len(self.detector._red_x_search_angles(45.0)), 6)
+        self.assertEqual(len(self.detector._red_x_search_angles(0.0)), 90)
 
     def test_runtime_skips_open_camera_without_frames_and_uses_probe_frame(self):
         first_frame = object()

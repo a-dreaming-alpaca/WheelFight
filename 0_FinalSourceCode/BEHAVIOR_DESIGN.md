@@ -54,11 +54,16 @@ Every behavior iteration consumes one complete `SensorFrame`. The perception
 layer records its receive time and sequence number. A missing or stale safety
 snapshot prevents new motion commands.
 
+The serial receiver keeps partial bytes across read timeouts and parses only
+newline-terminated, CRC-valid frames. If Linux scheduling causes several frames
+to accumulate, all valid sequences update diagnostics but only the newest frame
+is published to control code; historical states are never replayed.
+
 Initial timing policy, subject to real testing:
 
 - Control iteration: 20 ms.
-- Sensor stale warning: 60 ms.
-- Safety stop: no valid sensor frame for 100 ms.
+- Sensor stale/recovery-health threshold: 100 ms.
+- Safety stop: no valid sensor frame for 200 ms.
 - Camera stale: 250 ms. Camera staleness disables block-pushing decisions but
   does not by itself stop the chassis.
 
