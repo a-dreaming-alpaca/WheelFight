@@ -992,6 +992,7 @@ class MatchController:
                 "raw_digital": list(p.raw_digital),
                 "filtered_analog": list(p.filtered_analog),
                 "infrared_active": list(p.infrared_active),
+                "disabled_ir_indices": list(p.disabled_ir_indices),
                 "platform_state": p.platform_state.value,
                 "front_on_platform": p.front_on_platform,
                 "rear_on_platform": p.rear_on_platform,

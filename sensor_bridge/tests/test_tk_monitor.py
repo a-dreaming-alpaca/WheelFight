@@ -10,10 +10,15 @@ sys.path.insert(
     0, str(Path(__file__).resolve().parents[2] / "0_FinalSourceCode")
 )
 
-from tk_monitor import StatusReader  # noqa: E402
+from tk_monitor import HTML_PAGE, StatusReader  # noqa: E402
 
 
 class StatusReaderTests(unittest.TestCase):
+    def test_page_marks_disabled_ir_channels_without_hiding_raw_values(self):
+        self.assertIn("sensor.disabled_ir_indices", HTML_PAGE)
+        self.assertIn("DISABLED", HTML_PAGE)
+        self.assertIn("raw[i]", HTML_PAGE)
+
     def test_reads_controller_status_without_opening_hardware(self):
         with tempfile.TemporaryDirectory() as directory:
             status_path = Path(directory) / "match_status.json"

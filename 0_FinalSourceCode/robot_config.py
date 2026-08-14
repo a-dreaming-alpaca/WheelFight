@@ -32,6 +32,11 @@ class HardwareConfig:
 class SensorConfig:
     analog_filter_window: int = 3
 
+    # Temporary degraded-mode configuration: A10 is physically faulty. Keep
+    # its raw ADC value in telemetry, but exclude it from ranging decisions.
+    # Restore this to () after the replacement sensor is installed.
+    disabled_ir_indices: tuple[int, ...] = (10,)
+
     # Temporary 10-bit Mega ADC thresholds based on the first ranging test:
     # about 0 with no target, about 200 at 50 cm, and 500-600 near 10 cm.
     # The response falls again inside roughly 10 cm, so these values still

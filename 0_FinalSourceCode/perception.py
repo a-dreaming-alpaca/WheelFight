@@ -52,6 +52,7 @@ class PerceptionSnapshot:
     filtered_analog: tuple[int, ...]
     infrared: tuple[int, ...]
     infrared_active: tuple[bool, ...]
+    disabled_ir_indices: tuple[int, ...]
     clusters: tuple[IRCluster, ...]
     gray_front: int
     gray_rear: int
@@ -85,9 +86,13 @@ class PerceptionSnapshot:
         analog_bin_size: int = DEFAULT_CONFIG.sensors.stuck_analog_bin_size,
     ) -> tuple:
         bin_size = max(1, int(analog_bin_size))
+        disabled = set(self.disabled_ir_indices)
         return (
             tuple(
-                round(value / bin_size) for value in self.filtered_analog
+                None
+                if index in disabled
+                else round(value / bin_size)
+                for index, value in enumerate(self.filtered_analog)
             ),
             self.raw_digital,
             self.platform_state,
@@ -107,7 +112,17 @@ class PerceptionEngine:
                 f"{polarity}-on-platform polarity"
             )
 
+        disabled_ir_indices = tuple(config.disabled_ir_indices)
+        if any(
+            type(index) is not int or not 0 <= index < 12
+            for index in disabled_ir_indices
+        ) or len(disabled_ir_indices) != len(set(disabled_ir_indices)):
+            raise ValueError(
+                "disabled_ir_indices must contain unique integer indices in 0..11"
+            )
+
         self.config = config
+        self._disabled_ir_indices = frozenset(disabled_ir_indices)
         window = max(1, config.analog_filter_window)
         self._analog_windows = [deque(maxlen=window) for _ in range(14)]
         self._ir_active = [False] * 12
@@ -149,6 +164,9 @@ class PerceptionEngine:
         )
 
         for index in range(12):
+            if index in self._disabled_ir_indices:
+                self._ir_active[index] = False
+                continue
             enter, exit_value = self._ir_thresholds(index)
             self._ir_active[index] = self._update_hysteresis(
                 self._ir_active[index],
@@ -158,20 +176,26 @@ class PerceptionEngine:
                 self.config.ir_near_is_high,
             )
 
-        self._hand_near[0] = self._update_hysteresis(
-            self._hand_near[0],
-            filtered[9],
-            self.config.start_hand_enter,
-            self.config.start_hand_exit,
-            self.config.ir_near_is_high,
-        )
-        self._hand_near[1] = self._update_hysteresis(
-            self._hand_near[1],
-            filtered[3],
-            self.config.start_hand_enter,
-            self.config.start_hand_exit,
-            self.config.ir_near_is_high,
-        )
+        if 9 in self._disabled_ir_indices:
+            self._hand_near[0] = False
+        else:
+            self._hand_near[0] = self._update_hysteresis(
+                self._hand_near[0],
+                filtered[9],
+                self.config.start_hand_enter,
+                self.config.start_hand_exit,
+                self.config.ir_near_is_high,
+            )
+        if 3 in self._disabled_ir_indices:
+            self._hand_near[1] = False
+        else:
+            self._hand_near[1] = self._update_hysteresis(
+                self._hand_near[1],
+                filtered[3],
+                self.config.start_hand_enter,
+                self.config.start_hand_exit,
+                self.config.ir_near_is_high,
+            )
 
         self._gray_on[0] = self._update_hysteresis(
             self._gray_on[0],
@@ -204,6 +228,7 @@ class PerceptionEngine:
             filtered_analog=filtered,
             infrared=infrared,
             infrared_active=tuple(self._ir_active),
+            disabled_ir_indices=tuple(sorted(self._disabled_ir_indices)),
             clusters=clusters,
             gray_front=filtered[12],
             gray_rear=filtered[13],
@@ -288,18 +313,43 @@ class PerceptionEngine:
     def _build_clusters(
         self, values: tuple[int, ...], active: tuple[bool, ...]
     ) -> tuple[IRCluster, ...]:
-        if not any(active):
+        effective_active = tuple(
+            is_active and index not in self._disabled_ir_indices
+            for index, is_active in enumerate(active)
+        )
+        if not any(effective_active):
             return ()
-        if all(active):
-            groups = [tuple(range(12))]
+
+        def bridges_disabled_gap(index: int) -> bool:
+            return (
+                index in self._disabled_ir_indices
+                and effective_active[(index - 1) % 12]
+                and effective_active[(index + 1) % 12]
+            )
+
+        separators = [
+            index
+            for index, is_active in enumerate(effective_active)
+            if not is_active and not bridges_disabled_gap(index)
+        ]
+        if not separators:
+            groups = [
+                tuple(
+                    index
+                    for index, is_active in enumerate(effective_active)
+                    if is_active
+                )
+            ]
         else:
-            start = next(index for index, value in enumerate(active) if not value)
+            start = separators[0]
             groups = []
             group = []
             for step in range(1, 13):
                 index = (start + step) % 12
-                if active[index]:
+                if effective_active[index]:
                     group.append(index)
+                elif bridges_disabled_gap(index):
+                    continue
                 elif group:
                     groups.append(tuple(group))
                     group = []

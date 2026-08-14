@@ -54,6 +54,7 @@ HTML_PAGE = """<!doctype html>
     .ir strong { display: block; margin-bottom: 5px; }
     .ir small { color: #8b949e; font-variant-numeric: tabular-nums; }
     .ok { color: #3fb950; } .warn { color: #d29922; } .bad { color: #f85149; }
+    .ir.disabled { color: #8b949e; border-color: #6e7681; }
     pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere;
           font: 13px/1.5 ui-monospace, monospace; }
     @media (max-width: 760px) {
@@ -138,13 +139,19 @@ HTML_PAGE = """<!doctype html>
       ['可用模式', at(data, 'vision_available')], ['错误', at(data, 'vision.error', at(data, 'vision_backend.last_error'))]
     ]);
     const raw = sensor.raw_analog || [], filtered = sensor.filtered_analog || [];
-    const active = sensor.infrared_active || [], irRoot = document.getElementById('ir');
+    const active = sensor.infrared_active || [];
+    const disabled = new Set(sensor.disabled_ir_indices || []);
+    const irRoot = document.getElementById('ir');
     irRoot.innerHTML = '';
     for (let i = 0; i < 12; i++) {
-      const card = document.createElement('div'); card.className = `ir ${active[i] ? 'warn' : ''}`;
-      const title = document.createElement('strong'); title.textContent = `A${i} · ${bearings[i]}°`;
+      const isDisabled = disabled.has(i);
+      const card = document.createElement('div');
+      card.className = `ir ${isDisabled ? 'disabled' : (active[i] ? 'warn' : '')}`;
+      const title = document.createElement('strong');
+      title.textContent = `A${i} · ${bearings[i]}°${isDisabled ? ' · DISABLED' : ''}`;
       const detail = document.createElement('small');
-      detail.textContent = `原始 ${raw[i] ?? '--'} · 滤波 ${filtered[i] ?? '--'} · 触发 ${active[i] ?? '--'}`;
+      const state = isDisabled ? 'DISABLED' : (active[i] ?? '--');
+      detail.textContent = `原始 ${raw[i] ?? '--'} · 滤波 ${filtered[i] ?? '--'} · 状态 ${state}`;
       card.append(title, detail); irRoot.appendChild(card);
     }
     const digital = sensor.raw_digital || [];
