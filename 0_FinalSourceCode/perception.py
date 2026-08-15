@@ -276,17 +276,26 @@ class PerceptionEngine:
             self._edge_clear_counts[index] = 0
 
     def _update_rear_high(self, detected: bool) -> None:
-        required = max(1, self.config.rear_high_confirm_frames)
         if detected:
-            self._rear_high_detect_count += 1
             self._rear_high_clear_count = 0
+            if self._rear_high_state:
+                self._rear_high_detect_count = 0
+                return
+            self._rear_high_detect_count += 1
+            required = max(1, self.config.rear_high_confirm_frames)
             if self._rear_high_detect_count >= required:
                 self._rear_high_state = True
-        else:
-            self._rear_high_clear_count += 1
-            self._rear_high_detect_count = 0
-            if self._rear_high_clear_count >= required:
-                self._rear_high_state = False
+                self._rear_high_detect_count = 0
+            return
+        self._rear_high_detect_count = 0
+        if not self._rear_high_state:
+            self._rear_high_clear_count = 0
+            return
+        self._rear_high_clear_count += 1
+        required = max(1, self.config.rear_high_clear_frames)
+        if self._rear_high_clear_count >= required:
+            self._rear_high_state = False
+            self._rear_high_clear_count = 0
 
     def _update_platform_state(self) -> None:
         front, rear = self._gray_on

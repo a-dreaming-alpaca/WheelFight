@@ -72,8 +72,9 @@ Initial timing policy, subject to real testing:
 - Analog ranging and grayscale: short median/low-pass filter plus hysteresis.
 - Front edge assertion: one high sample is enough to stop forward motion.
 - Front edge clearing: require at least three consecutive low samples.
-- Rear high-object confirmation: require at least three consistent samples
-  before classifying a platform candidate as a fence.
+- Rear high-object assertion: one active sample immediately sets the
+  conservative state; clearing requires at least three consecutive inactive
+  samples.
 - Platform state transitions: require stable evidence over multiple frames,
   except when an edge signal requires immediate action.
 
@@ -600,7 +601,8 @@ Keep these in a configuration file:
 - A0-A11 object/range thresholds and direction weighting;
 - A12/A13 on/off thresholds, hysteresis, and gradient compensation;
 - DI0/DI1 edge assertion/clear timing;
-- DI2 fence confirmation timing and valid rear ranging window;
+- `rear_high_confirm_frames` and `rear_high_clear_frames`: DI2 assertion and
+  release frame counts, plus the valid rear ranging window;
 - `rear_platform_ir_indices`: rear ranging channels used by alignment and
   low-platform verification (A5/A6/A7 by default);
 - `rear_candidate_lost_grace`: brief rear-cluster dropout allowance;

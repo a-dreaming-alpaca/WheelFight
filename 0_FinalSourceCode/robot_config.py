@@ -11,8 +11,8 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class HardwareConfig:
-    left_motor_id: int = 1
-    right_motor_id: int = 2
+    left_motor_id: int = 2
+    right_motor_id: int = 1
     left_shovel_servo_id: int = 5
     right_shovel_servo_id: int = 6
     servo_mode: int = 0
@@ -35,7 +35,7 @@ class SensorConfig:
     # Temporary degraded-mode configuration: A10 is physically faulty. Keep
     # its raw ADC value in telemetry, but exclude it from ranging decisions.
     # Restore this to () after the replacement sensor is installed.
-    disabled_ir_indices: tuple[int, ...] = (10,)
+    disabled_ir_indices: tuple[int, ...] = ()
 
     # Temporary 10-bit Mega ADC thresholds based on the first ranging test:
     # about 0 with no target, about 200 at 50 cm, and 500-600 near 10 cm.
@@ -64,7 +64,10 @@ class SensorConfig:
     gray_off_exit: int = 700
 
     edge_clear_frames: int = 3
-    rear_high_confirm_frames: int = 3
+    # Default DI2 policy: assert on one active frame, then require several
+    # consecutive inactive frames before clearing the conservative state.
+    rear_high_confirm_frames: int = 1
+    rear_high_clear_frames: int = 3
     platform_confirm_frames: int = 3
     # Rear low-object sector used for platform alignment/verification.
     rear_platform_ir_indices: tuple[int, ...] = (5, 6, 7)
