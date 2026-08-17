@@ -85,7 +85,7 @@ class SensorConfig:
 @dataclass(frozen=True)
 class MotionConfig:
     search_turn_speed: int = 600
-    align_turn_speed: int = 600
+    align_turn_speed: int = 700
     fence_escape_forward_speed: int = 500
     fence_escape_turn_speed: int = 600
     platform_probe_speed: int = 300
@@ -99,7 +99,7 @@ class MotionConfig:
     avoid_turn_speed: int = 600
     avoid_depart_speed: int = 500
     edge_reverse_speed: int = 500
-    edge_turn_speed: int = 600
+    edge_turn_speed: int = 700
     partial_recover_speed: int = 500
     target_turn_gain: float = 5.0
 
@@ -128,7 +128,7 @@ class TimingConfig:
     align_timeout: float = 4.0
     platform_verify_time: float = 0.12
     platform_probe_timeout: float = 0.60
-    climb_prepare_forward_time: float = 0.70
+    climb_prepare_forward_time: float = 1.00
     climb_prepare_settle_time: float = 0.08
     fence_escape_forward_time: float = 1.00
     fence_escape_turn_time: float = 2.00

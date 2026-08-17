@@ -515,7 +515,7 @@ class MatchController:
             self._transition(RobotState.CLIMB_CLEAR_EDGE, "both grayscale on", now)
             return DriveCommand(label="climb-success-stop")
         if self._state_elapsed(now) > self.config.timing.climb_timeout:
-            self._transition(RobotState.FENCE_ESCAPE, "climb timeout withdraw", now)
+            self._transition(RobotState.GROUND_SEARCH, "climb timeout withdraw", now)
             return DriveCommand(label="climb-timeout-stop")
         speed = self.config.motion.climb_speed
         return DriveCommand(-speed, -speed, "climb-backward")
