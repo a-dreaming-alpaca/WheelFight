@@ -38,7 +38,8 @@ class PerceptionTests(unittest.TestCase):
             gray_on_enter=500,
             gray_off_exit=700,
             edge_clear_frames=2,
-            rear_high_confirm_frames=2,
+            rear_high_confirm_frames=1,
+            rear_high_clear_frames=2,
             platform_confirm_frames=1,
         )
         self.engine = PerceptionEngine(self.config)
@@ -57,6 +58,24 @@ class PerceptionTests(unittest.TestCase):
         self.assertEqual(on.platform_state, PlatformState.ON)
         self.assertEqual(off.platform_state, PlatformState.OFF)
 
+    def test_default_rear_high_policy_asserts_once_and_clears_after_three(self):
+        config = SensorConfig(analog_filter_window=1, platform_confirm_frames=1)
+        engine = PerceptionEngine(config)
+        analog = [100] * 12 + [300, 300]
+
+        states = [
+            engine.update(
+                frame(sequence, analog, digital, 1.0 + sequence * 0.02),
+                now=1.0 + sequence * 0.02,
+            ).rear_high_object
+            for sequence, digital in enumerate(
+                ((0, 0, 0), (0, 0, 1), (0, 0, 1), (0, 0, 1)),
+                start=1,
+            )
+        ]
+
+        self.assertEqual(states, [True, True, True, False])
+
     def test_invalid_grayscale_hysteresis_order_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "grayscale hysteresis"):
             PerceptionEngine(
@@ -72,7 +91,7 @@ class PerceptionTests(unittest.TestCase):
         first = self.engine.update(frame(1, analog, (0, 0, 0)), now=1.0)
         self.assertEqual(first.platform_state, PlatformState.ON)
         self.assertFalse(first.front_left_edge)
-        self.assertFalse(first.rear_high_object)
+        self.assertTrue(first.rear_high_object)
 
         second = self.engine.update(frame(2, analog, (1, 0, 0), 1.02), now=1.02)
         self.assertTrue(second.front_left_edge)
@@ -84,6 +103,45 @@ class PerceptionTests(unittest.TestCase):
         fourth = self.engine.update(frame(4, analog, (0, 0, 1), 1.06), now=1.06)
         self.assertFalse(fourth.front_left_edge)
         self.assertFalse(fourth.rear_high_object)
+
+    def test_rear_high_detection_resets_the_clear_streak(self):
+        analog = [100] * 12 + [300, 300]
+
+        detected = self.engine.update(
+            frame(1, analog, (0, 0, 0)), now=1.0
+        )
+        first_clear = self.engine.update(
+            frame(2, analog, (0, 0, 1), 1.02), now=1.02
+        )
+        detected_again = self.engine.update(
+            frame(3, analog, (0, 0, 0), 1.04), now=1.04
+        )
+        clear_after_reset = self.engine.update(
+            frame(4, analog, (0, 0, 1), 1.06), now=1.06
+        )
+        released = self.engine.update(
+            frame(5, analog, (0, 0, 1), 1.08), now=1.08
+        )
+
+        self.assertTrue(detected.rear_high_object)
+        self.assertTrue(first_clear.rear_high_object)
+        self.assertTrue(detected_again.rear_high_object)
+        self.assertTrue(clear_after_reset.rear_high_object)
+        self.assertFalse(released.rear_high_object)
+
+    def test_rear_high_assertion_threshold_remains_independently_configurable(self):
+        engine = PerceptionEngine(
+            replace(self.config, rear_high_confirm_frames=2)
+        )
+        analog = [100] * 12 + [300, 300]
+
+        first = engine.update(frame(1, analog, (0, 0, 0)), now=1.0)
+        second = engine.update(
+            frame(2, analog, (0, 0, 0), 1.02), now=1.02
+        )
+
+        self.assertFalse(first.rear_high_object)
+        self.assertTrue(second.rear_high_object)
 
     def test_front_rear_platform_transitions(self):
         front_off = [100] * 12 + [900, 300]

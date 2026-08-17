@@ -335,10 +335,32 @@ class ColorEnergyDetectorTests(unittest.TestCase):
     def test_classifier_requires_red_x_but_gain_remains_color_only(self):
         color_threshold = self.config.min_color_area_ratio
         x_threshold = self.config.min_red_x_score
+        no_marker_x_threshold = self.config.max_red_x_score_for_no_marker
         cases = (
             (0.0, 0.0, 0.0, EnergyClass.NO_BLOCK_MARKER, 1.0),
             (color_threshold, 0.0, 0.0, EnergyClass.GAIN, 0.5),
-            (0.0, color_threshold, 0.0, EnergyClass.UNKNOWN, 0.0),
+            (0.0, color_threshold, 0.0, EnergyClass.NO_BLOCK_MARKER, 1.0),
+            (
+                0.0,
+                color_threshold,
+                no_marker_x_threshold,
+                EnergyClass.NO_BLOCK_MARKER,
+                1.0 - no_marker_x_threshold / x_threshold,
+            ),
+            (
+                0.0,
+                color_threshold,
+                math.nextafter(no_marker_x_threshold, math.inf),
+                EnergyClass.UNKNOWN,
+                0.0,
+            ),
+            (
+                0.0,
+                color_threshold,
+                math.nextafter(x_threshold, 0.0),
+                EnergyClass.UNKNOWN,
+                0.0,
+            ),
             (
                 0.0,
                 color_threshold * 0.5,
@@ -381,9 +403,19 @@ class ColorEnergyDetectorTests(unittest.TestCase):
                     x_score,
                     color_threshold,
                     x_threshold,
+                    no_marker_x_threshold,
                 )
                 self.assertEqual(classification, expected_class)
                 self.assertAlmostEqual(confidence, expected_confidence)
+
+    def test_invalid_red_x_threshold_order_is_rejected(self):
+        invalid_config = replace(
+            self.config,
+            max_red_x_score_for_no_marker=self.config.min_red_x_score,
+        )
+
+        with self.assertRaisesRegex(ValueError, "red-X thresholds"):
+            ColorEnergyDetector(config=invalid_config)
 
     def test_red_x_grid_match_accepts_cross_at_any_rotation(self):
         for source_angle in (0.0, 7.0, 23.0, 37.0, 45.0, 68.0, 83.0):
@@ -456,7 +488,9 @@ class ColorEnergyDetectorTests(unittest.TestCase):
             contour_parents=(-1, 0),
         )
         field_result = self.detector.analyze_frame(frame, field_mark).result
-        self.assertEqual(field_result.classification, EnergyClass.UNKNOWN)
+        self.assertEqual(
+            field_result.classification, EnergyClass.NO_BLOCK_MARKER
+        )
         self.assertFalse(field_result.red_x_detected)
 
         framed_x = FakeCV2(
@@ -511,15 +545,15 @@ class ColorEnergyDetectorTests(unittest.TestCase):
         self.assertIsNotNone(result.red_x_angle_deg)
         self.assertGreaterEqual(result.confidence, self.config.min_color_confidence)
 
-    def test_red_box_without_x_is_not_harmful(self):
+    def test_red_box_without_x_is_no_block_marker(self):
         result = self.detector._detect_frame(
             FakeFrame((100, 200, 3)),
             FakeCV2(red_low=126, red_pattern="box"),
         )
 
-        self.assertEqual(result.classification, EnergyClass.UNKNOWN)
+        self.assertEqual(result.classification, EnergyClass.NO_BLOCK_MARKER)
         self.assertFalse(result.red_x_detected)
-        self.assertEqual(result.confidence, 0.0)
+        self.assertEqual(result.confidence, 1.0)
 
     def test_gain_color_is_not_blocked_by_unshaped_red_area(self):
         result = self.detector._detect_frame(

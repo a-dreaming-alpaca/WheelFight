@@ -112,12 +112,15 @@ def _build_status_lines(
         ),
         (
             f"Red X: {'YES' if red_x.detected else 'NO'}  score {red_x.score:.3f}  "
-            f"threshold {config.min_red_x_score:.3f}  "
+            f"no-marker <= {config.max_red_x_score_for_no_marker:.3f}  "
+            f"harmful >= {config.min_red_x_score:.3f}  "
             f"angle {red_x.angle_deg:.1f} deg"
             if red_x.angle_deg is not None
             else (
                 f"Red X: {'YES' if red_x.detected else 'NO'}  "
-                f"score {red_x.score:.3f}  threshold {config.min_red_x_score:.3f}  "
+                f"score {red_x.score:.3f}  "
+                f"no-marker <= {config.max_red_x_score_for_no_marker:.3f}  "
+                f"harmful >= {config.min_red_x_score:.3f}  "
                 "angle --"
             )
         ),

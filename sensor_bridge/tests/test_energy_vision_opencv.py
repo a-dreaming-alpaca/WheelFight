@@ -86,7 +86,7 @@ class OpenCVRedXTests(unittest.TestCase):
                 self.assertTrue(result.red_x_detected)
                 self.assertIsNotNone(result.red_x_angle_deg)
 
-    def test_red_non_cross_shapes_are_unknown(self):
+    def test_red_non_cross_shapes_are_no_block_marker(self):
         patterns = {}
 
         box = self._frame()
@@ -121,7 +121,13 @@ class OpenCVRedXTests(unittest.TestCase):
         for name, frame in patterns.items():
             with self.subTest(name=name):
                 result = self._analyze(frame)
-                self.assertEqual(result.classification, EnergyClass.UNKNOWN)
+                self.assertEqual(
+                    result.classification, EnergyClass.NO_BLOCK_MARKER
+                )
+                self.assertLessEqual(
+                    result.red_x_score,
+                    self.detector.config.max_red_x_score_for_no_marker,
+                )
                 self.assertFalse(result.red_x_detected)
 
     def test_gain_remains_color_only_next_to_red_box(self):

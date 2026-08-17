@@ -144,7 +144,9 @@ configured target colors. Its deliberately simple classification rules are:
 - yellow-green reaches the configured area threshold -> `GAIN`;
 - red reaches the area threshold and forms a clear cross at any searched angle
   -> `HARMFUL`;
-- significant red without a confirmed cross -> `UNKNOWN`;
+- significant red with a very low cross score -> `NO_BLOCK_MARKER`;
+- significant red with a cross score between the no-marker and harmful
+  thresholds -> `UNKNOWN`;
 - neither marker color reaches its area threshold -> `NO_BLOCK_MARKER`;
 - yellow-green and a valid red X are both present -> `UNKNOWN`.
 
@@ -159,9 +161,10 @@ Consequently, yellow-green plus unrelated invalid red remains `GAIN`; only a
 confirmed red cross conflicts with yellow-green and produces `UNKNOWN`.
 
 A `NO_BLOCK_MARKER` frame is counted as enemy evidence only when its confidence
-also reaches the configured minimum. Any frame with significant unconfirmed red
-is `UNKNOWN`, so a rotated, distorted, or incomplete harmful marker cannot
-become enemy evidence merely because its cross score missed the threshold.
+also reaches the configured minimum. A clearly non-cross red region may produce
+`NO_BLOCK_MARKER`, but a possible partial cross remains `UNKNOWN`, so a rotated,
+distorted, or incomplete harmful marker cannot become enemy evidence merely
+because its cross score narrowly missed the harmful threshold.
 
 The state machine requires consecutive, consistent fresh-frame votes before
 acting on these per-frame results. An unknown or conflicting frame resets the

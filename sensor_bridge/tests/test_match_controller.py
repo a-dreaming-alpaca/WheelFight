@@ -91,6 +91,7 @@ def test_config():
         gray_off_exit=450,
         edge_clear_frames=1,
         rear_high_confirm_frames=1,
+        rear_high_clear_frames=1,
         platform_confirm_frames=1,
     )
     timing = replace(

@@ -22,10 +22,10 @@ class HardwareConfig:
     # Calibrated shovel positions. Motion is enabled, so startup immediately
     # raises the shovel; keep the mechanism clear whenever the bus is opened.
     shovel_motion_enabled: bool = True
-    shovel_raised_left: int = 462
-    shovel_raised_right: int = 550
-    shovel_lowered_left: int = 1012
-    shovel_lowered_right: int = 0
+    shovel_raised_left: int = 300
+    shovel_raised_right: int = 700
+    shovel_lowered_left: int = 900
+    shovel_lowered_right: int = 100
 
 
 @dataclass(frozen=True)
@@ -194,6 +194,10 @@ class VisionConfig:
     # the detector clamps this value to the safe 1..15 degree range.
     red_x_angle_step_deg: float = 5.0
     min_red_x_score: float = 0.20
+    # Significant red with a score at or below this value is treated as
+    # confidently lacking a block marker. Scores between the two thresholds
+    # remain UNKNOWN to preserve ambiguous X-like evidence for another frame.
+    max_red_x_score_for_no_marker: float = 0.08
 
     reconnect_interval: float = 1.0
     show_debug_window: bool = False

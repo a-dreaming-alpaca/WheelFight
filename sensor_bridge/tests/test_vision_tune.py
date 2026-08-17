@@ -170,6 +170,15 @@ class VisionTuneTests(unittest.TestCase):
         self.assertIn("threshold 1.500%", lines[2])
         self.assertIn("Red X: YES", lines[4])
         self.assertIn("score 0.420", lines[4])
+        self.assertIn(
+            "no-marker <= "
+            f"{DEFAULT_CONFIG.vision.max_red_x_score_for_no_marker:.3f}",
+            lines[4],
+        )
+        self.assertIn(
+            f"harmful >= {DEFAULT_CONFIG.vision.min_red_x_score:.3f}",
+            lines[4],
+        )
         self.assertIn("angle 30.0 deg", lines[4])
         self.assertIn("class=GAIN", terminal)
         self.assertIn("gain=0.0234", terminal)

@@ -136,6 +136,15 @@ class ColorEnergyDetector:
         config: VisionConfig = DEFAULT_CONFIG.vision,
         clock=time.monotonic,
     ) -> None:
+        if not (
+            0.0
+            <= config.max_red_x_score_for_no_marker
+            < config.min_red_x_score
+        ):
+            raise ValueError(
+                "red-X thresholds must satisfy "
+                "0 <= max_red_x_score_for_no_marker < min_red_x_score"
+            )
         self.config = config
         self._clock = clock
         self._lock = threading.Lock()
@@ -310,6 +319,7 @@ class ColorEnergyDetector:
             red_x_evidence.score,
             config.min_color_area_ratio,
             config.min_red_x_score,
+            config.max_red_x_score_for_no_marker,
         )
 
         return ColorFrameAnalysis(
@@ -571,6 +581,7 @@ class ColorEnergyDetector:
         red_x_score: float,
         minimum_color_ratio: float,
         minimum_red_x_score: float,
+        maximum_red_x_score_for_no_marker: float,
     ) -> tuple[EnergyClass, float]:
         color_threshold = max(1e-9, minimum_color_ratio)
         x_threshold = max(1e-9, minimum_red_x_score)
@@ -594,9 +605,14 @@ class ColorEnergyDetector:
                 gain_ratio, color_threshold
             )
         if harmful_ratio >= color_threshold:
-            # Visible red without a confirmed cross is ambiguous, not enemy
-            # evidence. This covers rotated, distorted, or incomplete harmful
-            # markers without weakening the NO_BLOCK_MARKER safety contract.
+            if red_x_score <= maximum_red_x_score_for_no_marker:
+                no_x_confidence = 1.0 - min(
+                    1.0, max(0.0, red_x_score) / x_threshold
+                )
+                return EnergyClass.NO_BLOCK_MARKER, no_x_confidence
+
+            # A partial cross remains ambiguous: it may be an oblique or
+            # incomplete harmful marker, so it must not become enemy evidence.
             return EnergyClass.UNKNOWN, 0.0
 
         gain_absence = 1.0 - min(
