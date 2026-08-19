@@ -11,9 +11,9 @@ from dataclasses import dataclass
 from typing import Iterable, Optional, Union
 
 
-PROTOCOL_MARKER = "WF1"
-ANALOG_CHANNEL_COUNT = 14
-DIGITAL_CHANNEL_COUNT = 3
+PROTOCOL_MARKER = "WF2"
+ANALOG_CHANNEL_COUNT = 15
+DIGITAL_CHANNEL_COUNT = 2
 EXPECTED_FIELD_COUNT = 3 + ANALOG_CHANNEL_COUNT + DIGITAL_CHANNEL_COUNT
 MAX_UINT32 = 0xFFFFFFFF
 DEFAULT_BAUDRATE = 115200
@@ -55,6 +55,11 @@ class SensorFrame:
         return self.analog[13]
 
     @property
+    def rear_high_range(self) -> int:
+        """A14 raw ADC reading from the rear high-mounted ranging sensor."""
+        return self.analog[14]
+
+    @property
     def front_left_detected(self) -> bool:
         """Backward-compatible alias: nearby surface is detected (raw low)."""
         return self.digital[0] == 0
@@ -65,21 +70,12 @@ class SensorFrame:
         return self.digital[1] == 0
 
     @property
-    def rear_fence_detected(self) -> bool:
-        """Raw rear high-object detection; state determines whether it is fence."""
-        return self.digital[2] == 0
-
-    @property
     def front_left_edge(self) -> bool:
         return self.digital[0] == 1
 
     @property
     def front_right_edge(self) -> bool:
         return self.digital[1] == 1
-
-    @property
-    def rear_high_object(self) -> bool:
-        return self.digital[2] == 0
 
     def as_dict(self) -> dict:
         return {
@@ -90,12 +86,11 @@ class SensorFrame:
             "infrared": list(self.infrared),
             "grayscale_front": self.grayscale_front,
             "grayscale_rear": self.grayscale_rear,
+            "rear_high_range": self.rear_high_range,
             "front_left_detected": self.front_left_detected,
             "front_right_detected": self.front_right_detected,
-            "rear_fence_detected": self.rear_fence_detected,
             "front_left_edge": self.front_left_edge,
             "front_right_edge": self.front_right_edge,
-            "rear_high_object": self.rear_high_object,
             "received_monotonic": self.received_monotonic,
         }
 

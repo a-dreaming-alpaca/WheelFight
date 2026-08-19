@@ -6,8 +6,8 @@ its hardware-independent tests. Motor and servo commands remain exclusively in
 
 ## Components
 
-- `mega_firmware/WheelFightSensors/WheelFightSensors.ino`: samples 14 analog
-  and 3 digital inputs and sends versioned, checksummed frames.
+- `mega_firmware/WheelFightSensors/WheelFightSensors.ino`: samples 15 analog
+  and 2 digital inputs and sends versioned, checksummed frames.
 - `mega_firmware/DigitalInputScanner/DigitalInputScanner.ino`: temporary
   bring-up sketch that prints the raw level of every safe digital header pin
   from D2 through D53 and lists all pins currently low.
@@ -27,10 +27,9 @@ The default physical pin assignment is:
 
 | Sensor channels | Mega pins |
 | --- | --- |
-| `A0` ... `A13` | `A0` ... `A13` |
+| `A0` ... `A14` | `A0` ... `A14` |
 | `DI0` | `D22` |
 | `DI1` | `D23` |
-| `DI2` | `D24` |
 
 The digital pins use `INPUT_PULLUP`, matching active-low sensors and providing
 a defined idle level if a signal wire is disconnected. If the selected sensor

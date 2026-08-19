@@ -10,17 +10,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, TextIO
 
-from mega_sensor_reader import MegaSensorReader, SensorFrame
+from mega_sensor_reader import (
+    ANALOG_CHANNEL_COUNT,
+    DIGITAL_CHANNEL_COUNT,
+    MegaSensorReader,
+    SensorFrame,
+)
 
 
 CSV_HEADER = [
     "host_time_utc",
     "sequence",
     "mega_millis",
-    *[f"A{index}" for index in range(14)],
-    "DI0",
-    "DI1",
-    "DI2",
+    *[f"A{index}" for index in range(ANALOG_CHANNEL_COUNT)],
+    *[f"DI{index}" for index in range(DIGITAL_CHANNEL_COUNT)],
 ]
 
 
@@ -77,10 +80,9 @@ def print_frame(frame: SensorFrame, status: dict) -> None:
     )
     digital = (
         f"DI(raw)={frame.digital} "
-        f"detected(FL/FR/R)="
+        f"detected(FL/FR)="
         f"{int(frame.front_left_detected)}/"
-        f"{int(frame.front_right_detected)}/"
-        f"{int(frame.rear_fence_detected)}"
+        f"{int(frame.front_right_detected)}"
     )
     print(
         f"seq={frame.sequence} mega={frame.mega_millis}ms "
@@ -90,7 +92,8 @@ def print_frame(frame: SensorFrame, status: dict) -> None:
     print(f"  {infrared}")
     print(
         f"  gray_front={frame.grayscale_front:4d} "
-        f"gray_rear={frame.grayscale_rear:4d} {digital}"
+        f"gray_rear={frame.grayscale_rear:4d} "
+        f"rear_high_range={frame.rear_high_range:4d} {digital}"
     )
 
 

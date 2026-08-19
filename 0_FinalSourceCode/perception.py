@@ -10,11 +10,12 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Optional
 
-from mega_sensor_reader import SensorFrame
+from mega_sensor_reader import ANALOG_CHANNEL_COUNT, SensorFrame
 from robot_config import DEFAULT_CONFIG, SensorConfig
 
 
 REAR_CENTER_IR_INDEX = 6
+REAR_HIGH_ANALOG_INDEX = 14
 
 
 class PlatformState(str, Enum):
@@ -92,10 +93,13 @@ class PerceptionSnapshot:
                 None
                 if index in disabled
                 else round(value / bin_size)
-                for index, value in enumerate(self.filtered_analog)
+                for index, value in enumerate(
+                    self.filtered_analog[:REAR_HIGH_ANALOG_INDEX]
+                )
             ),
             self.raw_digital,
             self.platform_state,
+            self.rear_high_object,
         )
 
 
@@ -112,6 +116,37 @@ class PerceptionEngine:
                 f"{polarity}-on-platform polarity"
             )
 
+        rear_high_thresholds = (
+            config.rear_high_detect_enter,
+            config.rear_high_detect_exit,
+        )
+        if any(
+            type(value) is not int or not 0 <= value <= 1023
+            for value in rear_high_thresholds
+        ):
+            raise ValueError(
+                "rear-high hysteresis thresholds must be integers in 0..1023"
+            )
+        if config.ir_near_is_high:
+            valid_rear_high_hysteresis = (
+                config.rear_high_detect_enter > config.rear_high_detect_exit
+            )
+        else:
+            valid_rear_high_hysteresis = (
+                config.rear_high_detect_enter < config.rear_high_detect_exit
+            )
+        if not valid_rear_high_hysteresis:
+            polarity = "high" if config.ir_near_is_high else "low"
+            raise ValueError(
+                "invalid rear-high hysteresis thresholds for "
+                f"{polarity}-near polarity"
+            )
+
+        for name in ("rear_high_confirm_frames", "rear_high_clear_frames"):
+            value = getattr(config, name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+
         disabled_ir_indices = tuple(config.disabled_ir_indices)
         if any(
             type(index) is not int or not 0 <= index < 12
@@ -124,7 +159,9 @@ class PerceptionEngine:
         self.config = config
         self._disabled_ir_indices = frozenset(disabled_ir_indices)
         window = max(1, config.analog_filter_window)
-        self._analog_windows = [deque(maxlen=window) for _ in range(14)]
+        self._analog_windows = [
+            deque(maxlen=window) for _ in range(ANALOG_CHANNEL_COUNT)
+        ]
         self._ir_active = [False] * 12
         self._hand_near = [False, False]  # left A9, right A3
         self._gray_on = [False, False]
@@ -214,7 +251,14 @@ class PerceptionEngine:
 
         self._update_edge(0, frame.digital[0] == 1)
         self._update_edge(1, frame.digital[1] == 1)
-        self._update_rear_high(frame.digital[2] == 0)
+        rear_high_detected = self._update_hysteresis(
+            self._rear_high_state,
+            frame.analog[REAR_HIGH_ANALOG_INDEX],
+            self.config.rear_high_detect_enter,
+            self.config.rear_high_detect_exit,
+            self.config.ir_near_is_high,
+        )
+        self._update_rear_high(rear_high_detected)
         self._update_platform_state()
 
         infrared = filtered[:12]
@@ -282,8 +326,10 @@ class PerceptionEngine:
                 self._rear_high_detect_count = 0
                 return
             self._rear_high_detect_count += 1
-            required = max(1, self.config.rear_high_confirm_frames)
-            if self._rear_high_detect_count >= required:
+            if (
+                self._rear_high_detect_count
+                >= self.config.rear_high_confirm_frames
+            ):
                 self._rear_high_state = True
                 self._rear_high_detect_count = 0
             return
@@ -292,8 +338,7 @@ class PerceptionEngine:
             self._rear_high_clear_count = 0
             return
         self._rear_high_clear_count += 1
-        required = max(1, self.config.rear_high_clear_frames)
-        if self._rear_high_clear_count >= required:
+        if self._rear_high_clear_count >= self.config.rear_high_clear_frames:
             self._rear_high_state = False
             self._rear_high_clear_count = 0
 

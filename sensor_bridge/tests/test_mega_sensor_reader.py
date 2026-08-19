@@ -21,8 +21,8 @@ from robot_config import DEFAULT_CONFIG  # noqa: E402
 
 class ProtocolTests(unittest.TestCase):
     def setUp(self):
-        self.analog = tuple(range(100, 114))
-        self.digital = (0, 1, 0)
+        self.analog = tuple(range(100, 115))
+        self.digital = (0, 1)
 
     def test_crc_standard_vector(self):
         self.assertEqual(crc16_ccitt_false(b"123456789"), 0x29B1)
@@ -31,8 +31,8 @@ class ProtocolTests(unittest.TestCase):
         raw = encode_frame(42, 123456, self.analog, self.digital)
         self.assertEqual(
             raw,
-            b"WF1,42,123456,100,101,102,103,104,105,106,107,108,109,"
-            b"110,111,112,113,0,1,0*D1DC\r\n",
+            b"WF2,42,123456,100,101,102,103,104,105,106,107,108,109,"
+            b"110,111,112,113,114,0,1*838C\r\n",
         )
         frame = parse_frame(raw, received_monotonic=10.5)
 
@@ -50,9 +50,18 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(frame.infrared, self.analog[:12])
         self.assertEqual(frame.grayscale_front, 112)
         self.assertEqual(frame.grayscale_rear, 113)
+        self.assertEqual(frame.rear_high_range, 114)
         self.assertTrue(frame.front_left_detected)
         self.assertFalse(frame.front_right_detected)
-        self.assertTrue(frame.rear_fence_detected)
+
+    def test_a14_boundaries_do_not_shift_digital_channels(self):
+        for rear_high in (0, 1023):
+            with self.subTest(rear_high=rear_high):
+                analog = (*self.analog[:14], rear_high)
+                frame = parse_frame(encode_frame(1, 2, analog, self.digital))
+
+                self.assertEqual(frame.rear_high_range, rear_high)
+                self.assertEqual(frame.digital, self.digital)
 
     def test_rejects_bad_checksum(self):
         raw = bytearray(encode_frame(42, 123456, self.analog, self.digital))
@@ -61,14 +70,28 @@ class ProtocolTests(unittest.TestCase):
             parse_frame(bytes(raw))
 
     def test_rejects_out_of_range_analog_with_valid_checksum(self):
-        fields = ["WF1", "1", "2", "1024", *["0"] * 13, "0", "1", "1"]
+        fields = ["WF2", "1", "2", "1024", *["0"] * 14, "0", "1"]
+        payload = ",".join(fields).encode("ascii")
+        raw = payload + f"*{crc16_ccitt_false(payload):04X}\r\n".encode("ascii")
+        with self.assertRaises(FrameFormatError):
+            parse_frame(raw)
+
+    def test_rejects_out_of_range_digital_with_valid_checksum(self):
+        fields = ["WF2", "1", "2", *["0"] * 15, "0", "2"]
+        payload = ",".join(fields).encode("ascii")
+        raw = payload + f"*{crc16_ccitt_false(payload):04X}\r\n".encode("ascii")
+        with self.assertRaises(FrameFormatError):
+            parse_frame(raw)
+
+    def test_rejects_wf1_marker(self):
+        fields = ["WF1", "1", "2", *["0"] * 15, "0", "1"]
         payload = ",".join(fields).encode("ascii")
         raw = payload + f"*{crc16_ccitt_false(payload):04X}\r\n".encode("ascii")
         with self.assertRaises(FrameFormatError):
             parse_frame(raw)
 
     def test_rejects_wrong_field_count(self):
-        payload = b"WF1,1,2,0"
+        payload = b"WF2,1,2,0"
         raw = payload + f"*{crc16_ccitt_false(payload):04X}\r\n".encode("ascii")
         with self.assertRaises(FrameFormatError):
             parse_frame(raw)
@@ -80,8 +103,8 @@ class ReaderStateTests(unittest.TestCase):
         return SensorFrame(
             sequence=sequence,
             mega_millis=sequence * 20,
-            analog=(0,) * 14,
-            digital=(1, 1, 1),
+            analog=(0,) * 15,
+            digital=(1, 1),
             received_monotonic=received_monotonic,
         )
 
@@ -109,7 +132,7 @@ class ReaderStateTests(unittest.TestCase):
 
     def test_partial_frame_survives_empty_reads_and_is_completed_later(self):
         reader = MegaSensorReader()
-        raw = encode_frame(20, 400, (100,) * 14, (0, 1, 0))
+        raw = encode_frame(20, 400, (100,) * 15, (0, 1))
         split = len(raw) // 2
 
         self.assertIsNone(reader._consume_serial_bytes(raw[:split], 1.0))
@@ -125,8 +148,8 @@ class ReaderStateTests(unittest.TestCase):
 
     def test_reconnect_reset_prevents_old_partial_frame_from_splicing(self):
         reader = MegaSensorReader()
-        old = encode_frame(21, 420, (100,) * 14, (0, 1, 0))
-        new = encode_frame(22, 440, (101,) * 14, (0, 1, 0))
+        old = encode_frame(21, 420, (100,) * 15, (0, 1))
+        new = encode_frame(22, 440, (101,) * 15, (0, 1))
         split = len(old) // 2
 
         self.assertIsNone(reader._consume_serial_bytes(old[:split], 1.3))
@@ -142,7 +165,7 @@ class ReaderStateTests(unittest.TestCase):
     def test_backlog_updates_all_statistics_but_publishes_only_newest(self):
         reader = MegaSensorReader()
         backlog = b"".join(
-            encode_frame(sequence, sequence * 20, (sequence,) * 14, (1, 1, 1))
+            encode_frame(sequence, sequence * 20, (sequence,) * 15, (1, 1))
             for sequence in (30, 31, 32)
         )
 
@@ -158,9 +181,9 @@ class ReaderStateTests(unittest.TestCase):
 
     def test_bad_checksum_discards_only_that_line_before_valid_frame(self):
         reader = MegaSensorReader()
-        damaged = bytearray(encode_frame(40, 800, (100,) * 14, (1, 1, 1)))
+        damaged = bytearray(encode_frame(40, 800, (100,) * 15, (1, 1)))
         damaged[5] = ord("9")
-        good = encode_frame(41, 820, (101,) * 14, (1, 1, 1))
+        good = encode_frame(41, 820, (101,) * 15, (1, 1))
 
         newest = reader._consume_serial_bytes(bytes(damaged) + good, 3.0)
         status = reader.status()
@@ -173,8 +196,8 @@ class ReaderStateTests(unittest.TestCase):
 
     def test_valid_frame_before_bad_line_is_published_without_hiding_error(self):
         reader = MegaSensorReader()
-        good = encode_frame(45, 900, (101,) * 14, (1, 1, 1))
-        damaged = bytearray(encode_frame(46, 920, (102,) * 14, (1, 1, 1)))
+        good = encode_frame(45, 900, (101,) * 15, (1, 1))
+        damaged = bytearray(encode_frame(46, 920, (102,) * 15, (1, 1)))
         damaged[5] = ord("9")
 
         newest = reader._consume_serial_bytes(good + bytes(damaged), 3.5)
@@ -189,7 +212,7 @@ class ReaderStateTests(unittest.TestCase):
 
     def test_oversized_line_resynchronizes_without_clearing_following_frame(self):
         reader = MegaSensorReader(max_line_bytes=128)
-        good = encode_frame(50, 1000, (102,) * 14, (1, 1, 1))
+        good = encode_frame(50, 1000, (102,) * 15, (1, 1))
 
         self.assertIsNone(reader._consume_serial_bytes(b"x" * 128, 4.0))
         self.assertEqual(reader.status()["invalid_frames"], 1)
@@ -204,7 +227,7 @@ class ReaderStateTests(unittest.TestCase):
 
     def test_complete_oversized_line_does_not_hide_same_chunk_valid_frame(self):
         reader = MegaSensorReader(max_line_bytes=128)
-        good = encode_frame(60, 1200, (103,) * 14, (1, 1, 1))
+        good = encode_frame(60, 1200, (103,) * 15, (1, 1))
 
         newest = reader._consume_serial_bytes(
             b"x" * 129 + b"\n" + good,
@@ -219,7 +242,7 @@ class ReaderStateTests(unittest.TestCase):
     def test_sequence_gap_inside_one_backlog_is_counted(self):
         reader = MegaSensorReader()
         backlog = b"".join(
-            encode_frame(sequence, sequence * 20, (100,) * 14, (1, 1, 1))
+            encode_frame(sequence, sequence * 20, (100,) * 15, (1, 1))
             for sequence in (70, 72)
         )
 

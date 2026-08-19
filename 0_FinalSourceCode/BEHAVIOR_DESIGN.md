@@ -26,9 +26,9 @@ speeds, timings, and shovel positions remain provisional until physical tests.
 | A0-A11 | Twelve horizontal infrared ranging sensors, A0 forward, clockwise every 30 degrees | Object direction, enemy/block candidates, platform/fence candidates on the ground |
 | A12 | Front underside grayscale | Front-on-platform estimate and front/rear transition recovery |
 | A13 | Rear underside grayscale | Rear-on-platform estimate and rear transition recovery |
+| A14 | Rear high-object analog ranging sensor | Hysteretic high rear-object estimate used to reject the outer fence |
 | DI0 | Front-left downward photoelectric | Raw 0 means nearby platform surface; raw 1 means likely left/front edge |
 | DI1 | Front-right downward photoelectric | Raw 0 means nearby platform surface; raw 1 means likely right/front edge |
-| DI2 | Rear high-object photoelectric | Raw 0 means a high rear object is present; raw 1 means no high rear object |
 | Camera | Forward image | Energy-block classification and confidence |
 
 The software should expose semantic values rather than use raw levels in state
@@ -37,14 +37,22 @@ handlers:
 ```text
 front_left_edge       = DI0 == 1
 front_right_edge      = DI1 == 1
-rear_high_object      = DI2 == 0
+rear_high_object      = hysteretic interpretation of A14
 front_on_platform     = calibrated interpretation of A12
 rear_on_platform      = calibrated interpretation of A13
 ```
 
-DI2 is not globally equivalent to `fence_detected`. It means a high object is
-behind the robot. Only while the robot is below the platform, rear-aligned with
-a ranging candidate, is that high object interpreted as the outer fence.
+A14 is interpreted using `rear_high_detect_enter` and
+`rear_high_detect_exit`, with the same `ir_near_is_high` polarity used by the
+infrared ring. Its decision path uses the current Mega frame's raw A14 value,
+which has already been averaged over four ADC conversions in the firmware;
+the cross-frame median remains telemetry only. With the current
+high-means-near polarity, a value at or above the enter threshold asserts
+`rear_high_object`; the state remains set until the value falls below the exit
+threshold for the configured clear-frame count. `rear_high_object` is not
+globally equivalent to `fence_detected`. It means a high object is behind the
+robot. Only while the robot is below the platform, rear-aligned with a ranging
+candidate, is that high object interpreted as the outer fence.
 
 ## 3. Perception layer
 
@@ -72,9 +80,10 @@ Initial timing policy, subject to real testing:
 - Analog ranging and grayscale: short median/low-pass filter plus hysteresis.
 - Front edge assertion: one high sample is enough to stop forward motion.
 - Front edge clearing: require at least three consecutive low samples.
-- Rear high-object assertion: one active sample immediately sets the
-  conservative state; clearing requires at least three consecutive inactive
-  samples.
+- Rear high-object assertion: one current-frame A14 sample crossing
+  `rear_high_detect_enter` immediately sets the conservative state; clearing
+  requires at least three consecutive samples beyond
+  `rear_high_detect_exit`.
 - Platform state transitions: require stable evidence over multiple frames,
   except when an edge signal requires immediate action.
 
@@ -300,16 +309,16 @@ Purpose: distinguish low platform from high fence.
 Actions:
 
 - approach backward only at low probe speed if the candidate is too far;
-- continuously monitor rear ranging and DI2;
-- stop immediately if DI2 confirms a high rear object;
+- continuously monitor rear ranging and the hysteretic A14 high-object signal;
+- stop immediately if `rear_high_object` is asserted;
 - require several consistent frames before accepting a low obstacle.
 
 Decision:
 
 ```text
-rear ranging absent                 -> candidate lost, search again
-rear ranging present and DI2 == 0  -> high object/fence, reject
-rear ranging present and DI2 == 1  -> low object/platform candidate
+rear ranging absent                            -> candidate lost, search again
+rear ranging present and rear_high_object      -> high object/fence, reject
+rear ranging present and not rear_high_object  -> low object/platform candidate
 ```
 
 Only the third combination may enter `CLIMB_PREPARE`.
@@ -328,8 +337,8 @@ Actions:
   cluster during this forward motion as a lost candidate;
 - stop for `climb_prepare_settle_time` before reversing, reducing mechanical
   and current shock when the motor direction changes;
-- continuously monitor DI2 and abort to `FENCE_ESCAPE` if a high rear object
-  is confirmed;
+- continuously monitor the hysteretic A14 high-object signal and abort to
+  `FENCE_ESCAPE` if a high rear object is confirmed;
 - if both grayscale sensors already report on-platform, stop preparation and
   enter `CLIMB_CLEAR_EDGE` instead of driving forward off the platform;
 - reset the recorded climb grayscale sequence immediately before entering
@@ -604,7 +613,9 @@ Keep these in a configuration file:
 - A0-A11 object/range thresholds and direction weighting;
 - A12/A13 on/off thresholds, hysteresis, and gradient compensation;
 - DI0/DI1 edge assertion/clear timing;
-- `rear_high_confirm_frames` and `rear_high_clear_frames`: DI2 assertion and
+- `rear_high_detect_enter` and `rear_high_detect_exit`: A14 high-object
+  hysteresis thresholds;
+- `rear_high_confirm_frames` and `rear_high_clear_frames`: A14 assertion and
   release frame counts, plus the valid rear ranging window;
 - `rear_platform_ir_indices`: rear ranging channels used by alignment and
   low-platform verification (A5/A6/A7 by default);
@@ -642,7 +653,8 @@ previous gate passes:
 3. Front edge preemption on a stationary raised test platform.
 4. Front/rear grayscale transition recovery at low speed.
 5. Ground candidate scan and rear alignment.
-6. Platform-versus-fence verification using rear ranging plus DI2.
+6. Platform-versus-fence verification using rear ranging plus the hysteretic
+   A14 high-object signal.
 7. Low-speed platform probe, forward run-up preparation, then full-speed climb
    and interior clearance.
 8. On-platform moving search and target alignment.

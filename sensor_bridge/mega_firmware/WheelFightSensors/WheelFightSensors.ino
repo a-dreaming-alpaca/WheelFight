@@ -6,20 +6,21 @@ constexpr uint32_t SERIAL_BAUD = 115200UL;
 constexpr uint16_t SAMPLE_RATE_HZ = 50;
 constexpr uint32_t SAMPLE_INTERVAL_US = 1000000UL / SAMPLE_RATE_HZ;
 
-constexpr uint8_t ANALOG_CHANNEL_COUNT = 14;
-constexpr uint8_t DIGITAL_CHANNEL_COUNT = 3;
+constexpr uint8_t ANALOG_CHANNEL_COUNT = 15;
+constexpr uint8_t DIGITAL_CHANNEL_COUNT = 2;
 constexpr uint8_t ADC_SAMPLES_PER_CHANNEL = 4;
 
 // Logical A0-A11 are the clockwise infrared ring. A12 and A13 are the
-// front and rear underside grayscale sensors.
+// front and rear underside grayscale sensors. A14 is the rear high-mounted
+// infrared ranging sensor.
 const uint8_t ANALOG_PINS[ANALOG_CHANNEL_COUNT] = {
     A0, A1, A2, A3, A4, A5, A6,
-    A7, A8, A9, A10, A11, A12, A13,
+    A7, A8, A9, A10, A11, A12, A13, A14,
 };
 
-// DI0 = front-left, DI1 = front-right, DI2 = rear fence. The logical
-// channel numbers intentionally do not use the Mega's physical D0/D1 pins.
-const uint8_t DIGITAL_PINS[DIGITAL_CHANNEL_COUNT] = {22, 23, 24};
+// DI0 = front-left and DI1 = front-right. The logical channel numbers
+// intentionally do not use the Mega's physical D0/D1 pins.
+const uint8_t DIGITAL_PINS[DIGITAL_CHANNEL_COUNT] = {22, 23};
 constexpr uint8_t DIGITAL_PIN_MODE = INPUT_PULLUP;
 
 constexpr size_t PAYLOAD_BUFFER_SIZE = 192;
@@ -82,7 +83,7 @@ void sampleAndSendFrame() {
   }
 
   char payload[PAYLOAD_BUFFER_SIZE];
-  int initial_written = snprintf(payload, sizeof(payload), "WF1,%lu,%lu",
+  int initial_written = snprintf(payload, sizeof(payload), "WF2,%lu,%lu",
                                  static_cast<unsigned long>(sequence_number),
                                  static_cast<unsigned long>(sample_time_ms));
   if (initial_written < 0 ||

@@ -73,7 +73,7 @@ HTML_PAGE = """<!doctype html>
     <section><h2>Mega 通信</h2><div id="link" class="rows"></div></section>
     <section><h2>摄像头识别</h2><div id="vision" class="rows"></div></section>
     <section class="wide"><h2>12 路红外测距（A0 正前，顺时针）</h2><div id="ir" class="ir-grid"></div></section>
-    <section><h2>灰度与数字量原始值</h2><div id="raw" class="rows"></div></section>
+    <section><h2>灰度、后方高位与数字量</h2><div id="raw" class="rows"></div></section>
     <section><h2>目标簇</h2><pre id="clusters">--</pre></section>
   </div>
 </main>
@@ -158,8 +158,9 @@ HTML_PAGE = """<!doctype html>
     renderRows('raw', [
       ['A12 前灰度', raw[12] ?? '--'], ['A13 后灰度', raw[13] ?? '--'],
       ['A12 前滤波', filtered[12] ?? '--'], ['A13 后滤波', filtered[13] ?? '--'],
-      ['DI0 前左', digital[0] ?? '--'], ['DI1 前右', digital[1] ?? '--'],
-      ['DI2 后方', digital[2] ?? '--']
+      ['A14 后方高位原始', raw[14] ?? '--'],
+      ['A14 后方高位滤波', filtered[14] ?? '--'],
+      ['DI0 前左', digital[0] ?? '--'], ['DI1 前右', digital[1] ?? '--']
     ]);
     document.getElementById('clusters').textContent = JSON.stringify(sensor.clusters || [], null, 2);
   }

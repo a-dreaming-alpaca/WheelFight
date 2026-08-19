@@ -49,6 +49,11 @@ class SensorConfig:
     # hysteresis pair.
     ir_a6_detect_enter: int = 300
     ir_a6_detect_exit: int = 250
+    # A14 is the rear-facing high-mounted analog ranging sensor. It shares
+    # the ring sensors' polarity but keeps an independently calibrated
+    # hysteresis pair.
+    rear_high_detect_enter: int = 350
+    rear_high_detect_exit: int = 300
     # A frame with neither complete energy-block marker is enemy evidence only
     # when the centered ranging target is at least this close. This is
     # provisional and must be measured.
@@ -64,7 +69,7 @@ class SensorConfig:
     gray_off_exit: int = 700
 
     edge_clear_frames: int = 3
-    # Default DI2 policy: assert on one active frame, then require several
+    # Assert rear-high detection on one A14 frame, then require several
     # consecutive inactive frames before clearing the conservative state.
     rear_high_confirm_frames: int = 1
     rear_high_clear_frames: int = 3
@@ -92,13 +97,13 @@ class MotionConfig:
     climb_prepare_speed: int = 500
     climb_speed: int = 900
     climb_clear_speed: int = 300
-    arena_patrol_speed: int = 550
+    arena_patrol_speed: int = 600
     attack_speed: int = 700
     attack_min_speed: int = 350
-    push_gain_speed: int = 500
+    push_gain_speed: int = 600
     avoid_turn_speed: int = 600
     avoid_depart_speed: int = 500
-    edge_reverse_speed: int = 500
+    edge_reverse_speed: int = 600
     edge_turn_speed: int = 700
     partial_recover_speed: int = 500
     target_turn_gain: float = 5.0
@@ -147,8 +152,8 @@ class TimingConfig:
     avoid_turn_time: float = 1.00
     avoid_depart_time: float = 0.60
 
-    edge_stop_time: float = 0.06
-    edge_reverse_time: float = 0.28
+    edge_stop_time: float = 0.05
+    edge_reverse_time: float = 0.50
     edge_turn_time: float = 0.70
     edge_recover_timeout: float = 3.00
     partial_recover_timeout: float = 1.20

@@ -90,6 +90,8 @@ def test_config():
         gray_on_enter=550,
         gray_off_exit=450,
         edge_clear_frames=1,
+        rear_high_detect_enter=350,
+        rear_high_detect_exit=300,
         rear_high_confirm_frames=1,
         rear_high_clear_frames=1,
         platform_confirm_frames=1,
@@ -148,14 +150,16 @@ class ControllerHarness:
         *,
         ir=None,
         gray=(100, 100),
-        digital=(0, 0, 1),
+        rear_high=0,
+        digital=(0, 0),
         vision=None,
         vision_confidence=1.0,
         received_age=0.0,
     ):
         # The first ranging calibration measured an unobstructed IR value near 0.
-        analog = [0] * 14
+        analog = [0] * 15
         analog[12], analog[13] = gray
+        analog[14] = rear_high
         if ir:
             for index, value in ir.items():
                 analog[index] = value
@@ -251,14 +255,14 @@ class MatchControllerTests(unittest.TestCase):
         platform = ControllerHarness()
         platform.controller.state = RobotState.VERIFY_PLATFORM
         platform.controller.state_entered = platform.clock()
-        platform.step(ir={6: 800}, digital=(0, 0, 1))
-        platform.step(ir={6: 800}, digital=(0, 0, 1))
+        platform.step(ir={6: 800}, digital=(0, 0))
+        platform.step(ir={6: 800}, digital=(0, 0))
         self.assertEqual(platform.controller.state, RobotState.CLIMB_PREPARE)
 
         fence = ControllerHarness()
         fence.controller.state = RobotState.VERIFY_PLATFORM
         fence.controller.state_entered = fence.clock()
-        command = fence.step(ir={6: 800}, digital=(0, 0, 0))
+        command = fence.step(ir={6: 800}, rear_high=800, digital=(0, 0))
         self.assertEqual(fence.controller.state, RobotState.FENCE_ESCAPE)
         self.assertEqual(command.label, "fence-confirmed-stop")
 
@@ -396,7 +400,7 @@ class MatchControllerTests(unittest.TestCase):
         h.controller.state = RobotState.CLIMB_PREPARE
         h.controller.state_entered = h.clock()
 
-        command = h.step(ir={6: 800}, digital=(0, 0, 0))
+        command = h.step(ir={6: 800}, rear_high=800, digital=(0, 0))
 
         self.assertEqual(h.controller.state, RobotState.FENCE_ESCAPE)
         self.assertEqual((command.left_speed, command.right_speed), (0, 0))
@@ -417,7 +421,7 @@ class MatchControllerTests(unittest.TestCase):
         h.controller.state = RobotState.CLIMB_PREPARE
         h.controller.state_entered = h.clock()
 
-        command = h.step(gray=(700, 700), digital=(0, 0, 0))
+        command = h.step(gray=(700, 700), rear_high=800, digital=(0, 0))
 
         self.assertEqual(h.controller.state, RobotState.CLIMB_CLEAR_EDGE)
         self.assertEqual((command.left_speed, command.right_speed), (0, 0))
@@ -590,7 +594,7 @@ class MatchControllerTests(unittest.TestCase):
         h.controller.state_entered = h.clock()
         h.controller.match_started = True
         h.controller.match_start_time = h.clock()
-        command = h.step(ir={0: 800}, gray=(700, 700), digital=(1, 0, 1))
+        command = h.step(ir={0: 800}, gray=(700, 700), digital=(1, 0))
         self.assertEqual(h.controller.state, RobotState.EDGE_RECOVER)
         self.assertEqual(command.left_speed, 0)
         self.assertEqual(command.right_speed, 0)
@@ -602,7 +606,7 @@ class MatchControllerTests(unittest.TestCase):
         def enter_double_edge_recovery():
             h.controller.state = RobotState.ARENA_SEARCH
             h.controller.state_entered = h.clock()
-            command = h.step(gray=(700, 700), digital=(1, 1, 1))
+            command = h.step(gray=(700, 700), digital=(1, 1))
             self.assertEqual(h.controller.state, RobotState.EDGE_RECOVER)
             self.assertEqual((command.left_speed, command.right_speed), (0, 0))
             return h.controller.state_entered
@@ -614,7 +618,7 @@ class MatchControllerTests(unittest.TestCase):
             + timing.edge_reverse_time
             + 1e-6
         )
-        first_turn = h.step(gray=(700, 700), digital=(0, 0, 1))
+        first_turn = h.step(gray=(700, 700), digital=(0, 0))
         self.assertGreater(first_turn.left_speed, 0)
         self.assertLess(first_turn.right_speed, 0)
 
@@ -625,7 +629,7 @@ class MatchControllerTests(unittest.TestCase):
             + timing.edge_turn_time
             + 1e-6
         )
-        h.step(gray=(700, 700), digital=(0, 0, 1))
+        h.step(gray=(700, 700), digital=(0, 0))
         self.assertEqual(h.controller.state, RobotState.ARENA_SEARCH)
 
         repeated_entered = enter_double_edge_recovery()
@@ -635,7 +639,7 @@ class MatchControllerTests(unittest.TestCase):
             + timing.edge_reverse_time
             + 1e-6
         )
-        repeated_turn = h.step(gray=(700, 700), digital=(0, 0, 1))
+        repeated_turn = h.step(gray=(700, 700), digital=(0, 0))
         self.assertGreater(repeated_turn.left_speed, 0)
         self.assertLess(repeated_turn.right_speed, 0)
 
@@ -689,13 +693,13 @@ class MatchControllerTests(unittest.TestCase):
                 + timing.edge_reverse_time
                 + 1e-6
             )
-            return h.step(gray=(700, 700), digital=(0, 0, 1))
+            return h.step(gray=(700, 700), digital=(0, 0))
 
-        left_edge_turn = turn_command_for((1, 0, 1))
+        left_edge_turn = turn_command_for((1, 0))
         self.assertGreater(left_edge_turn.left_speed, 0)
         self.assertLess(left_edge_turn.right_speed, 0)
 
-        right_edge_turn = turn_command_for((0, 1, 1))
+        right_edge_turn = turn_command_for((0, 1))
         self.assertLess(right_edge_turn.left_speed, 0)
         self.assertGreater(right_edge_turn.right_speed, 0)
 
@@ -705,7 +709,12 @@ class MatchControllerTests(unittest.TestCase):
         h.controller.state_entered = h.clock()
         h.controller.match_started = True
         h.controller.match_start_time = h.clock()
-        command = h.step(ir={6: 800}, gray=(100, 100), digital=(0, 0, 0))
+        command = h.step(
+            ir={6: 800},
+            gray=(100, 100),
+            rear_high=800,
+            digital=(0, 0),
+        )
         self.assertEqual(h.controller.state, RobotState.FENCE_ESCAPE)
         self.assertEqual(command.label, "climb-fence-stop")
 
@@ -766,7 +775,7 @@ class MatchControllerTests(unittest.TestCase):
         first_right = h.step(ir={1: 800}, gray=(700, 700))
         same_entry_right = h.step(ir={11: 800}, gray=(700, 700))
 
-        edge_stop = h.step(gray=(700, 700), digital=(0, 1, 1))
+        edge_stop = h.step(gray=(700, 700), digital=(0, 1))
         self.assertEqual(h.controller.state, RobotState.EDGE_RECOVER)
         self.assertEqual(edge_stop.label, "edge-stop")
 
@@ -874,7 +883,7 @@ class MatchControllerTests(unittest.TestCase):
         )
         h.clock.value += h.controller.config.timing.avoid_turn_time + 1e-6
 
-        command = h.step(gray=(700, 700), digital=(1, 0, 1))
+        command = h.step(gray=(700, 700), digital=(1, 0))
 
         self.assertEqual(h.controller.state, RobotState.EDGE_RECOVER)
         self.assertEqual((command.left_speed, command.right_speed), (0, 0))
