@@ -136,6 +136,8 @@ class MatchController:
         self._last_vision_vote_timestamp: Optional[float] = None
         self._target_last_seen = now
         self._edge_pattern = (False, False)
+        self._edge_recovery_confirm_count = 0
+        self._edge_action_started_at: Optional[float] = None
         # A positive sign is a right turn. Lock it per avoidance entry.
         self._avoid_turn_sign = 1
         self._next_avoid_turn_sign = 1
@@ -738,9 +740,26 @@ class MatchController:
     # Edge, fall and fault states
     # ------------------------------------------------------------------
     def _step_edge_recover(self, p, vision, now) -> DriveCommand:
-        elapsed = self._state_elapsed(now)
         timing = self.config.timing
         motion = self.config.motion
+
+        if self._edge_action_started_at is None:
+            raw_pattern = (p.front_left_edge_raw, p.front_right_edge_raw)
+            if raw_pattern == self._edge_pattern:
+                self._edge_recovery_confirm_count += 1
+            else:
+                self._edge_recovery_confirm_count = 0
+
+            if (
+                self._edge_recovery_confirm_count
+                >= self.config.sensors.edge_recovery_confirm_frames
+            ):
+                self._edge_action_started_at = now
+
+        if self._edge_action_started_at is None:
+            return DriveCommand(label="edge-recovery-confirm-stop")
+
+        elapsed = max(0.0, now - self._edge_action_started_at)
         if elapsed < timing.edge_stop_time:
             return DriveCommand(label="edge-immediate-stop")
         if elapsed < timing.edge_stop_time + timing.edge_reverse_time:
@@ -857,6 +876,9 @@ class MatchController:
             self._climb_seen_rear_on = False
         if state == RobotState.FAULT_STOP:
             self._fault_started = now
+        if state == RobotState.EDGE_RECOVER:
+            self._edge_recovery_confirm_count = 0
+            self._edge_action_started_at = None
         self._publish_status(force=True)
 
     def _state_elapsed(self, now: float) -> float:

@@ -68,6 +68,8 @@ class SensorConfig:
     gray_on_enter: int = 500
     gray_off_exit: int = 700
 
+    edge_confirm_frames: int = 2
+    edge_recovery_confirm_frames: int = 3
     edge_clear_frames: int = 3
     # Assert rear-high detection on one A14 frame, then require several
     # consecutive inactive frames before clearing the conservative state.
