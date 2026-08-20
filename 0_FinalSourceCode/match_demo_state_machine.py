@@ -744,8 +744,8 @@ class MatchController:
         motion = self.config.motion
 
         if self._edge_action_started_at is None:
-            raw_pattern = (p.front_left_edge_raw, p.front_right_edge_raw)
-            if raw_pattern == self._edge_pattern:
+            stable_pattern = (p.front_left_edge, p.front_right_edge)
+            if stable_pattern == self._edge_pattern:
                 self._edge_recovery_confirm_count += 1
             else:
                 self._edge_recovery_confirm_count = 0
@@ -755,6 +755,19 @@ class MatchController:
                 >= self.config.sensors.edge_recovery_confirm_frames
             ):
                 self._edge_action_started_at = now
+
+        if self._state_elapsed(now) > timing.edge_recover_timeout:
+            if p.platform_state == PlatformState.ON:
+                self._transition(
+                    RobotState.ARENA_SEARCH, "edge recovery timeout but on platform", now
+                )
+            else:
+                self._transition(
+                    RobotState.PARTIAL_FALL_RECOVER,
+                    "edge recovery timeout",
+                    now,
+                )
+            return DriveCommand(label="edge-recovery-timeout-stop")
 
         if self._edge_action_started_at is None:
             return DriveCommand(label="edge-recovery-confirm-stop")
@@ -787,18 +800,6 @@ class MatchController:
         if turn_complete and clear:
             self._transition(RobotState.ARENA_SEARCH, "edge recovery complete", now)
             return DriveCommand(label="edge-recovery-complete-stop")
-        if elapsed > timing.edge_recover_timeout:
-            if p.platform_state == PlatformState.ON:
-                self._transition(
-                    RobotState.ARENA_SEARCH, "edge recovery timeout but on platform", now
-                )
-            else:
-                self._transition(
-                    RobotState.PARTIAL_FALL_RECOVER,
-                    "edge recovery timeout",
-                    now,
-                )
-            return DriveCommand(label="edge-recovery-timeout-stop")
         return DriveCommand(speed, -speed, "edge-turn-away")
 
     def _step_partial_fall(self, p, vision, now) -> DriveCommand:
@@ -877,7 +878,9 @@ class MatchController:
         if state == RobotState.FAULT_STOP:
             self._fault_started = now
         if state == RobotState.EDGE_RECOVER:
-            self._edge_recovery_confirm_count = 0
+            # The triggering stable edge sample is the first confirmation
+            # frame; subsequent cycles provide the remaining confirmations.
+            self._edge_recovery_confirm_count = 1
             self._edge_action_started_at = None
         self._publish_status(force=True)
 
