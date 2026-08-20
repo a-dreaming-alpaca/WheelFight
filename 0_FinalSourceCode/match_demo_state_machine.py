@@ -13,6 +13,7 @@ from typing import Optional
 from energy_vision import ColorEnergyDetector, EnergyClass, VisionResult
 from mega_sensor_reader import MegaSensorReader
 from motion_controller import DriveCommand, MotionController
+from yolo_vision import YoloEnergyDetector
 from perception import (
     PerceptionEngine,
     PerceptionSnapshot,
@@ -114,8 +115,10 @@ class MatchController:
         self.motion_controller = motion_controller or MotionController(
             config=config.hardware
         )
-        self.vision_detector = vision_detector or ColorEnergyDetector(
-            config=config.vision, clock=clock
+        self.vision_detector = vision_detector or YoloEnergyDetector(
+            model_path=os.path.join(os.path.dirname(__file__), "yolo", "out.rknn"),
+            config=config.vision,
+            clock=clock,
         )
         self.perception = PerceptionEngine(config.sensors)
 
@@ -619,14 +622,14 @@ class MatchController:
                 vote = vision.classification
                 if (
                     vote in (EnergyClass.GAIN, EnergyClass.HARMFUL)
-                    and vision.confidence < self.config.vision.min_color_confidence
+                    and vision.confidence <= self.config.vision.min_color_confidence
                 ):
                     vote = EnergyClass.UNKNOWN
                 if (
                     vote == EnergyClass.NO_BLOCK_MARKER
                     and (
                         vision.confidence
-                        < self.config.vision.min_color_confidence
+                        <= self.config.vision.min_color_confidence
                         or not self._good_no_marker_view(target)
                     )
                 ):
@@ -912,7 +915,7 @@ class MatchController:
     ) -> bool:
         return (
             vision.classification == classification
-            and vision.confidence >= self.config.vision.min_color_confidence
+            and vision.confidence > self.config.vision.min_color_confidence
             and vision.is_fresh(now, self.config.timing.camera_stale_after)
         )
 

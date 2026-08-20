@@ -22,6 +22,7 @@ RK3588S（感知层 → 可抢占状态机 → 电机/舵机）
 - `mega_sensor_reader.py`：Mega 串口自动发现、CRC 校验、丢帧统计和断线重连。
 - `perception.py`：滤波、迟滞、台面状态、边缘语义和 12 方向目标聚类。
 - `energy_vision.py`：摄像头视觉接口；黄绿色面积识别增益块，红色面积加 X 形状识别减益块。
+- `yolo_vision.py`：`yolo/out.rknn` 的 YOLOv8 RKNN 后端；`Buff` 映射为增益块，`Debuff` 映射为减益块，无检测结果按敌车证据处理。
 - `vision_tune.py`：只打开摄像头的视觉标定工具，显示 ROI、分类、颜色占比和掩膜。
 - `motion_controller.py`：唯一的电机/舵机写入边界；左侧 ID 2，右侧 ID 1，
   铲子左 ID 5、右 ID 6。电机直接使用 `CDS_SetSpeed`，只有两个舵机需要设置模式0。
@@ -45,6 +46,12 @@ python3 -m pip install -r sensor_requirements.txt
 ```bash
 python3 -c "import cv2; print('vision ok')"
 ```
+
+正式控制器默认加载 `yolo/out.rknn`。板端还需要与模型转换版本匹配的
+`rknn-toolkit-lite2`，并确认类别顺序为 `0=Buff`、`1=Debuff`。模型输入为
+`640x640` 的 RGB、NHWC、`uint8` 图像；YOLOv8 输出由 `yolo_vision.py` 在 CPU
+上完成解码和 NMS。目标未检测到时输出 `NO_BLOCK_MARKER`，状态机在连续帧和
+红外近距条件满足后将其作为敌车处理。
 
 ## 摄像头视觉标定
 

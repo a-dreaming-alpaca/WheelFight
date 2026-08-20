@@ -170,7 +170,7 @@ class VisionConfig:
     frame_height: int = 480
     classify_votes: int = 3
     no_marker_votes_for_enemy: int = 5
-    min_color_confidence: float = 0.35
+    min_color_confidence: float = 0.25
 
     # The IR layer centers the target first, so color recognition only uses a
     # fixed central image region. All HSV values use OpenCV's H=0..179 scale.
