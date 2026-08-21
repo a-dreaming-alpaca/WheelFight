@@ -212,8 +212,10 @@ class StartupBlindClimbTests(unittest.TestCase):
         self.assertEqual((moving.left_speed, moving.right_speed), (-speed, -speed))
         self.assertEqual(moving.label, "startup-climb-backward")
 
-    def test_startup_burst_ignores_rear_high_until_normal_climb(self):
-        h = StartupHarness()
+    def test_startup_burst_ignores_rear_high_until_normal_climb_off_platform(self):
+        base = startup_config()
+        sensors = replace(base.sensors, force_platform_on=False)
+        h = StartupHarness(replace(base, sensors=sensors))
         _, entered = h.enter_startup_burst()
 
         h.clock.value = entered + 0.02
@@ -229,6 +231,51 @@ class StartupBlindClimbTests(unittest.TestCase):
         self.assertEqual(h.controller.state, RobotState.FENCE_ESCAPE)
         self.assertEqual((complete.left_speed, complete.right_speed), (0, 0))
         self.assertEqual(complete.label, "climb-fence-stop")
+
+    def test_startup_burst_expiry_prefers_platform_over_rear_high(self):
+        h = StartupHarness()
+        _, entered = h.enter_startup_burst()
+
+        h.clock.value = (
+            entered
+            + h.controller.config.timing.startup_climb_backward_time
+            + 1e-6
+        )
+        command = h.step(rear_high=800)
+
+        self.assertTrue(h.controller.last_perception.rear_high_object)
+        self.assertEqual(h.controller.state, RobotState.CLIMB_REORIENT)
+        self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+        self.assertEqual(command.label, "climb-success-stop")
+
+    def test_climb_prepare_prefers_platform_over_rear_high(self):
+        h = StartupHarness()
+        h.controller.state = RobotState.CLIMB_PREPARE
+        h.controller.state_entered = h.clock()
+
+        command = h.step(rear_high=800)
+
+        self.assertTrue(h.controller.last_perception.rear_high_object)
+        self.assertEqual(h.controller.state, RobotState.CLIMB_REORIENT)
+        self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+        self.assertEqual(command.label, "climb-prepare-already-on-stop")
+
+    def test_normal_climb_prefers_platform_over_rear_high(self):
+        h = StartupHarness()
+        h.controller.state = RobotState.CLIMB_PREPARE
+        h.controller.state_entered = h.clock()
+        h.controller._transition(
+            RobotState.CLIMB_BACKWARD,
+            "rear-high priority test",
+            h.clock(),
+        )
+
+        command = h.step(rear_high=800)
+
+        self.assertTrue(h.controller.last_perception.rear_high_object)
+        self.assertEqual(h.controller.state, RobotState.CLIMB_REORIENT)
+        self.assertEqual((command.left_speed, command.right_speed), (0, 0))
+        self.assertEqual(command.label, "climb-success-stop")
 
     def test_normal_grayscale_semantics_apply_on_burst_expiry_frame(self):
         h = StartupHarness()

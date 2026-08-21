@@ -328,7 +328,9 @@ class MatchController:
         if self.state in (
             RobotState.CLIMB_PREPARE,
             RobotState.CLIMB_BACKWARD,
-        ) and p.rear_high_object:
+        ) and p.rear_high_object and not (
+            p.front_on_platform and p.rear_on_platform
+        ):
             self._transition(
                 RobotState.FENCE_ESCAPE, "high rear object during climb", now
             )
@@ -456,7 +458,9 @@ class MatchController:
             # The open-loop interval has ended, so apply the ordinary climb
             # semantics to this same Mega frame instead of delaying them by
             # one control period.
-            if p.rear_high_object:
+            if p.rear_high_object and not (
+                p.front_on_platform and p.rear_on_platform
+            ):
                 self._transition(
                     RobotState.FENCE_ESCAPE,
                     "high rear object during climb",
