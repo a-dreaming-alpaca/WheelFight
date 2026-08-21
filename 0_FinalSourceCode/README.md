@@ -22,6 +22,7 @@ RK3588S（感知层 → 可抢占状态机 → 电机/舵机）
 - `mega_sensor_reader.py`：Mega 串口自动发现、CRC 校验、丢帧统计和断线重连。
 - `perception.py`：滤波、迟滞、台面状态、边缘语义和 12 方向目标聚类。
 - `energy_vision.py`：摄像头视觉接口；黄绿色面积识别增益块，红色面积加 X 形状识别减益块。
+- `yolo_vision.py`：`yolo/out.rknn` 的 YOLOv8 RKNN 后端；`Buff` 映射为增益块，`Debuff` 映射为减益块，无检测结果按敌车证据处理。
 - `vision_tune.py`：只打开摄像头的视觉标定工具，显示 ROI、分类、颜色占比和掩膜。
 - `motion_controller.py`：唯一的电机/舵机写入边界；左侧 ID 2，右侧 ID 1，
   铲子左 ID 5、右 ID 6。电机直接使用 `CDS_SetSpeed`，只有两个舵机需要设置模式0。
@@ -44,6 +45,26 @@ python3 -m pip install -r sensor_requirements.txt
 
 ```bash
 python3 -c "import cv2; print('vision ok')"
+```
+
+正式控制器默认加载 `yolo/out.rknn`。板端还需要与模型转换版本匹配的
+`rknn-toolkit-lite2`，并确认类别顺序为 `0=Debuff`、`1=Buff`。模型输入为
+`640x640` 的 RGB、NCHW、`float32` 图像，数值范围为 `[0, 1]`；YOLOv8 输出由 `yolo_vision.py` 在 CPU
+上完成反量化、解码和 NMS。目标未检测到时输出 `NO_BLOCK_MARKER`，状态机在连续帧和
+红外近距条件满足后将其作为敌车处理。
+
+调试 YOLO 模型时运行：
+
+```bash
+python3 yolo_tune.py
+```
+
+该工具只打开摄像头和 RKNN 模型，不启动 Mega、电机或状态机；窗口会显示所有
+NMS 后检测框、类别、每个框的置信度、最高置信度、FPS 和实际模型路径。可以指定
+摄像头、置信度和 NMS 阈值，例如：
+
+```bash
+python3 yolo_tune.py --camera 0 --confidence 0.15 --iou 0.45
 ```
 
 ## 摄像头视觉标定

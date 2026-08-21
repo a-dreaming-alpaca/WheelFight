@@ -68,6 +68,8 @@ class SensorConfig:
     gray_on_enter: int = 500
     gray_off_exit: int = 700
 
+    edge_confirm_frames: int = 2
+    edge_recovery_confirm_frames: int = 3
     edge_clear_frames: int = 3
     # Assert rear-high detection on one A14 frame, then require several
     # consecutive inactive frames before clearing the conservative state.
@@ -121,7 +123,7 @@ class TimingConfig:
     # warning and emergency-stop thresholds above.
     sensor_read_timeout: float = 0.03
     sensor_reconnect_interval: float = 1.00
-    camera_stale_after: float = 0.25
+    camera_stale_after: float = 0.80
     status_publish_interval: float = 0.10
     match_duration: float = 100000.0
 
@@ -143,7 +145,7 @@ class TimingConfig:
 
     target_center_confirm_time: float = 0.08
     target_align_timeout: float = 3.00
-    target_classify_timeout: float = 0.80
+    target_classify_timeout: float = 1.50
     target_lost_grace: float = 0.25
     attack_timeout: float = 2.50
     push_timeout: float = 3.00
@@ -168,7 +170,7 @@ class VisionConfig:
     frame_height: int = 480
     classify_votes: int = 3
     no_marker_votes_for_enemy: int = 5
-    min_color_confidence: float = 0.35
+    min_color_confidence: float = 0.10
 
     # The IR layer centers the target first, so color recognition only uses a
     # fixed central image region. All HSV values use OpenCV's H=0..179 scale.

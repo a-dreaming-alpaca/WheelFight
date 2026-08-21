@@ -62,6 +62,8 @@ class PerceptionSnapshot:
     platform_state: PlatformState
     front_left_edge: bool
     front_right_edge: bool
+    front_left_edge_raw: bool
+    front_right_edge_raw: bool
     rear_high_object: bool
     start_left_hand_near: bool
     start_right_hand_near: bool
@@ -167,6 +169,7 @@ class PerceptionEngine:
         self._gray_on = [False, False]
 
         self._edge_state = [False, False]
+        self._edge_confirm_counts = [0, 0]
         self._edge_clear_counts = [0, 0]
         self._rear_high_state = False
         self._rear_high_detect_count = 0
@@ -281,6 +284,8 @@ class PerceptionEngine:
             platform_state=self._platform_state,
             front_left_edge=self._edge_state[0],
             front_right_edge=self._edge_state[1],
+            front_left_edge_raw=frame.digital[0] == 1,
+            front_right_edge_raw=frame.digital[1] == 1,
             rear_high_object=self._rear_high_state,
             start_left_hand_near=self._hand_near[0],
             start_right_hand_near=self._hand_near[1],
@@ -309,9 +314,15 @@ class PerceptionEngine:
 
     def _update_edge(self, index: int, raw_edge: bool) -> None:
         if raw_edge:
-            self._edge_state[index] = True
+            self._edge_confirm_counts[index] += 1
             self._edge_clear_counts[index] = 0
+            if (
+                self._edge_confirm_counts[index]
+                >= self.config.edge_confirm_frames
+            ):
+                self._edge_state[index] = True
             return
+        self._edge_confirm_counts[index] = 0
         if not self._edge_state[index]:
             return
         self._edge_clear_counts[index] += 1

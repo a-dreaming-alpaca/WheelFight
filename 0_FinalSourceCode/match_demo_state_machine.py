@@ -13,6 +13,7 @@ from typing import Optional
 from energy_vision import ColorEnergyDetector, EnergyClass, VisionResult
 from mega_sensor_reader import MegaSensorReader
 from motion_controller import DriveCommand, MotionController
+from yolo_vision import YoloEnergyDetector
 from perception import (
     PerceptionEngine,
     PerceptionSnapshot,
@@ -114,8 +115,10 @@ class MatchController:
         self.motion_controller = motion_controller or MotionController(
             config=config.hardware
         )
-        self.vision_detector = vision_detector or ColorEnergyDetector(
-            config=config.vision, clock=clock
+        self.vision_detector = vision_detector or YoloEnergyDetector(
+            model_path=os.path.join(os.path.dirname(__file__), "yolo", "best.pt"),
+            config=config.vision,
+            clock=clock,
         )
         self.perception = PerceptionEngine(config.sensors)
 
@@ -136,6 +139,8 @@ class MatchController:
         self._last_vision_vote_timestamp: Optional[float] = None
         self._target_last_seen = now
         self._edge_pattern = (False, False)
+        self._edge_recovery_confirm_count = 0
+        self._edge_action_started_at: Optional[float] = None
         # A positive sign is a right turn. Lock it per avoidance entry.
         self._avoid_turn_sign = 1
         self._next_avoid_turn_sign = 1
@@ -617,14 +622,14 @@ class MatchController:
                 vote = vision.classification
                 if (
                     vote in (EnergyClass.GAIN, EnergyClass.HARMFUL)
-                    and vision.confidence < self.config.vision.min_color_confidence
+                    and vision.confidence <= self.config.vision.min_color_confidence
                 ):
                     vote = EnergyClass.UNKNOWN
                 if (
                     vote == EnergyClass.NO_BLOCK_MARKER
                     and (
                         vision.confidence
-                        < self.config.vision.min_color_confidence
+                        <= self.config.vision.min_color_confidence
                         or not self._good_no_marker_view(target)
                     )
                 ):
@@ -738,9 +743,39 @@ class MatchController:
     # Edge, fall and fault states
     # ------------------------------------------------------------------
     def _step_edge_recover(self, p, vision, now) -> DriveCommand:
-        elapsed = self._state_elapsed(now)
         timing = self.config.timing
         motion = self.config.motion
+
+        if self._edge_action_started_at is None:
+            stable_pattern = (p.front_left_edge, p.front_right_edge)
+            if stable_pattern == self._edge_pattern:
+                self._edge_recovery_confirm_count += 1
+            else:
+                self._edge_recovery_confirm_count = 0
+
+            if (
+                self._edge_recovery_confirm_count
+                >= self.config.sensors.edge_recovery_confirm_frames
+            ):
+                self._edge_action_started_at = now
+
+        if self._state_elapsed(now) > timing.edge_recover_timeout:
+            if p.platform_state == PlatformState.ON:
+                self._transition(
+                    RobotState.ARENA_SEARCH, "edge recovery timeout but on platform", now
+                )
+            else:
+                self._transition(
+                    RobotState.PARTIAL_FALL_RECOVER,
+                    "edge recovery timeout",
+                    now,
+                )
+            return DriveCommand(label="edge-recovery-timeout-stop")
+
+        if self._edge_action_started_at is None:
+            return DriveCommand(label="edge-recovery-confirm-stop")
+
+        elapsed = max(0.0, now - self._edge_action_started_at)
         if elapsed < timing.edge_stop_time:
             return DriveCommand(label="edge-immediate-stop")
         if elapsed < timing.edge_stop_time + timing.edge_reverse_time:
@@ -768,18 +803,6 @@ class MatchController:
         if turn_complete and clear:
             self._transition(RobotState.ARENA_SEARCH, "edge recovery complete", now)
             return DriveCommand(label="edge-recovery-complete-stop")
-        if elapsed > timing.edge_recover_timeout:
-            if p.platform_state == PlatformState.ON:
-                self._transition(
-                    RobotState.ARENA_SEARCH, "edge recovery timeout but on platform", now
-                )
-            else:
-                self._transition(
-                    RobotState.PARTIAL_FALL_RECOVER,
-                    "edge recovery timeout",
-                    now,
-                )
-            return DriveCommand(label="edge-recovery-timeout-stop")
         return DriveCommand(speed, -speed, "edge-turn-away")
 
     def _step_partial_fall(self, p, vision, now) -> DriveCommand:
@@ -857,6 +880,11 @@ class MatchController:
             self._climb_seen_rear_on = False
         if state == RobotState.FAULT_STOP:
             self._fault_started = now
+        if state == RobotState.EDGE_RECOVER:
+            # The triggering stable edge sample is the first confirmation
+            # frame; subsequent cycles provide the remaining confirmations.
+            self._edge_recovery_confirm_count = 1
+            self._edge_action_started_at = None
         self._publish_status(force=True)
 
     def _state_elapsed(self, now: float) -> float:
@@ -887,7 +915,7 @@ class MatchController:
     ) -> bool:
         return (
             vision.classification == classification
-            and vision.confidence >= self.config.vision.min_color_confidence
+            and vision.confidence > self.config.vision.min_color_confidence
             and vision.is_fresh(now, self.config.timing.camera_stale_after)
         )
 
@@ -975,11 +1003,9 @@ class MatchController:
             "vision": {
                 "classification": vision.classification.value,
                 "confidence": vision.confidence,
-                "gain_color_ratio": vision.gain_color_ratio,
-                "harmful_color_ratio": vision.harmful_color_ratio,
-                "red_x_score": vision.red_x_score,
-                "red_x_detected": vision.red_x_detected,
-                "red_x_angle_deg": vision.red_x_angle_deg,
+                "tag_id": vision.tag_id,
+                "center_x": vision.center_x,
+                "bbox_width": vision.bbox_width,
                 "age": max(0.0, self.clock() - vision.timestamp),
                 "error": vision.error,
             },
