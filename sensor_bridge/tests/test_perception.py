@@ -39,6 +39,7 @@ class PerceptionTests(unittest.TestCase):
             gray_on_is_high=False,
             gray_on_enter=500,
             gray_off_exit=700,
+            edge_confirm_frames=1,
             edge_clear_frames=2,
             rear_high_confirm_frames=1,
             rear_high_clear_frames=2,
@@ -51,12 +52,12 @@ class PerceptionTests(unittest.TestCase):
         engine = PerceptionEngine(config)
 
         on = engine.update(
-            frame(1, [100] * 12 + [300, 300, 100], (0, 0)), now=1.0
+            frame(1, [100] * 12 + [700, 700, 100], (0, 0)), now=1.0
         )
         off = engine.update(
             frame(
                 2,
-                [100] * 12 + [900, 900, 100],
+                [100] * 12 + [500, 500, 100],
                 (0, 0),
                 1.02,
             ),
@@ -429,6 +430,57 @@ class PerceptionTests(unittest.TestCase):
         )
 
         self.assertEqual(first.feature_signature(), second.feature_signature())
+
+    def test_feature_signature_ignores_raw_di_jitter_until_filter_changes(self):
+        engine = PerceptionEngine(
+            replace(
+                self.config,
+                edge_confirm_frames=2,
+                edge_clear_frames=2,
+            )
+        )
+        analog = [100] * 12 + [300, 300, 100]
+
+        baseline = engine.update(frame(1, analog, (0, 0)), now=1.0)
+        raw_only = engine.update(
+            frame(2, analog, (1, 0), 1.02),
+            now=1.02,
+        )
+        raw_cleared = engine.update(
+            frame(3, analog, (0, 0), 1.04),
+            now=1.04,
+        )
+
+        self.assertTrue(raw_only.front_left_edge_raw)
+        self.assertFalse(raw_only.front_left_edge)
+        self.assertEqual(
+            baseline.feature_signature(),
+            raw_only.feature_signature(),
+        )
+        self.assertEqual(
+            baseline.feature_signature(),
+            raw_cleared.feature_signature(),
+        )
+
+        first_filtered_vote = engine.update(
+            frame(4, analog, (1, 0), 1.06),
+            now=1.06,
+        )
+        filtered_edge = engine.update(
+            frame(5, analog, (1, 0), 1.08),
+            now=1.08,
+        )
+
+        self.assertFalse(first_filtered_vote.front_left_edge)
+        self.assertEqual(
+            baseline.feature_signature(),
+            first_filtered_vote.feature_signature(),
+        )
+        self.assertTrue(filtered_edge.front_left_edge)
+        self.assertNotEqual(
+            baseline.feature_signature(),
+            filtered_edge.feature_signature(),
+        )
 
     def test_a14_does_not_create_ir_cluster_or_continuous_stuck_feature(self):
         analog = [100] * 15

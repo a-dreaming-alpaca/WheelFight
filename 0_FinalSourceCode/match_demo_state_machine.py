@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import time
 from collections import Counter
@@ -30,6 +31,7 @@ class RobotState(str, Enum):
     BOOT_SELF_CHECK = "BOOT_SELF_CHECK"
     WAIT_START_GESTURE = "WAIT_START_GESTURE"
     DEPLOY_SHOVEL = "DEPLOY_SHOVEL"
+    STARTUP_CLIMB_BURST = "STARTUP_CLIMB_BURST"
 
     GROUND_SEARCH = "GROUND_SEARCH"
     ALIGN_REAR = "ALIGN_REAR"
@@ -37,7 +39,7 @@ class RobotState(str, Enum):
     CLIMB_PREPARE = "CLIMB_PREPARE"
     FENCE_ESCAPE = "FENCE_ESCAPE"
     CLIMB_BACKWARD = "CLIMB_BACKWARD"
-    CLIMB_CLEAR_EDGE = "CLIMB_CLEAR_EDGE"
+    CLIMB_REORIENT = "CLIMB_REORIENT"
 
     ARENA_SEARCH = "ARENA_SEARCH"
     TARGET_ALIGN = "TARGET_ALIGN"
@@ -46,20 +48,21 @@ class RobotState(str, Enum):
     PUSH_GAIN_BLOCK = "PUSH_GAIN_BLOCK"
     AVOID_BLOCK = "AVOID_BLOCK"
     EDGE_RECOVER = "EDGE_RECOVER"
-    PARTIAL_FALL_RECOVER = "PARTIAL_FALL_RECOVER"
 
     FAULT_STOP = "FAULT_STOP"
     MATCH_END = "MATCH_END"
 
 
 GROUND_STATES = {
+    RobotState.DEPLOY_SHOVEL,
+    RobotState.STARTUP_CLIMB_BURST,
     RobotState.GROUND_SEARCH,
     RobotState.ALIGN_REAR,
     RobotState.VERIFY_PLATFORM,
     RobotState.CLIMB_PREPARE,
     RobotState.FENCE_ESCAPE,
     RobotState.CLIMB_BACKWARD,
-    RobotState.CLIMB_CLEAR_EDGE,
+    RobotState.CLIMB_REORIENT,
 }
 
 ARENA_STATES = {
@@ -103,6 +106,20 @@ class MatchController:
             raise ValueError(
                 "rear_platform_ir_indices must contain A0..A11 indices"
             )
+        startup_climb_time = config.timing.startup_climb_backward_time
+        if (
+            isinstance(startup_climb_time, bool)
+            or not isinstance(startup_climb_time, (int, float))
+            or not math.isfinite(startup_climb_time)
+            or startup_climb_time <= 0
+        ):
+            raise ValueError(
+                "startup_climb_backward_time must be a finite positive number"
+            )
+        for name in ("full_fall_confirm_frames",):
+            value = getattr(config.sensors, name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
         self.config = config
         self.clock = clock
         self.wall_clock = wall_clock
@@ -139,13 +156,22 @@ class MatchController:
         self._last_vision_vote_timestamp: Optional[float] = None
         self._target_last_seen = now
         self._edge_pattern = (False, False)
-        self._edge_recovery_confirm_count = 0
+        self._edge_recovery_mode = "none"
+        self._edge_recovery_drive_direction = -1
+        self._edge_turn_sign = 1
         self._edge_action_started_at: Optional[float] = None
+        self._edge_turn_started_at: Optional[float] = None
+        self._edge_event_armed = True
+        self._edge_event_last_sequence: Optional[int] = None
+        self._fall_evidence_latched = False
+        self._full_fall_confirm_count = 0
+        self._full_fall_last_sequence: Optional[int] = None
+        self._last_linear_direction = 0
         # A positive sign is a right turn. Lock it per avoidance entry.
         self._avoid_turn_sign = 1
         self._next_avoid_turn_sign = 1
-        self._climb_seen_rear_on = False
-        self._fault_started = now
+        self._climb_attempt_started_at: Optional[float] = None
+        self._fault_previous_state = RobotState.BOOT_SELF_CHECK
         self._last_feature_signature = None
         self._feature_changed_at = now
         self._last_status_publish = 0.0
@@ -234,6 +260,10 @@ class MatchController:
     def _finish_step(self, command: DriveCommand, now: float) -> DriveCommand:
         self.last_command = command
         self.motion_controller.apply(command)
+        if command.left_speed > 0 and command.right_speed > 0:
+            self._last_linear_direction = 1
+        elif command.left_speed < 0 and command.right_speed < 0:
+            self._last_linear_direction = -1
         self._publish_status()
         return command
 
@@ -241,7 +271,9 @@ class MatchController:
     # Safety supervisor
     # ------------------------------------------------------------------
     def _handle_missing_sensor(self, now: float) -> DriveCommand:
-        if self.state != RobotState.BOOT_SELF_CHECK:
+        if self.state == RobotState.MATCH_END:
+            return DriveCommand(label="match-end-stop")
+        if self.state not in (RobotState.BOOT_SELF_CHECK, RobotState.FAULT_STOP):
             self._transition(RobotState.FAULT_STOP, "no Mega sensor frame", now)
         return DriveCommand(label="sensor-missing-stop")
 
@@ -249,6 +281,8 @@ class MatchController:
         self, p: PerceptionSnapshot, now: float
     ) -> Optional[DriveCommand]:
         timing = self.config.timing
+        if self.state == RobotState.MATCH_END:
+            return DriveCommand(label="match-end-stop")
         if p.sensor_age > timing.sensor_stop_after:
             if self.state != RobotState.FAULT_STOP:
                 self._transition(
@@ -271,22 +305,25 @@ class MatchController:
                 )
             return DriveCommand(label="match-end-stop")
 
-        if self.state in (RobotState.FAULT_STOP, RobotState.MATCH_END):
-            return None
         if self.state in PREMATCH_STATES:
             return None
 
-        if (
-            self.state == RobotState.CLIMB_PREPARE
-            and p.front_on_platform
-            and p.rear_on_platform
-        ):
-            self._transition(
-                RobotState.CLIMB_CLEAR_EDGE,
-                "already on platform during climb preparation",
-                now,
-            )
-            return DriveCommand(label="climb-prepare-already-on-stop")
+        if self.state == RobotState.STARTUP_CLIMB_BURST:
+            # This deliberately open-loop, one-shot state ignores all
+            # platform, edge and rear-object semantics. Sensor hard faults and
+            # match end remain active because they are checked above.
+            return None
+
+        edge_sensitive_states = ARENA_STATES | {
+            RobotState.EDGE_RECOVER,
+            RobotState.CLIMB_REORIENT,
+        }
+        edge_event = self._consume_filtered_edge_event(
+            p,
+            enabled=self.state in edge_sensitive_states,
+        )
+        if self.state == RobotState.FAULT_STOP:
+            return None
 
         if self.state in (
             RobotState.CLIMB_PREPARE,
@@ -297,43 +334,44 @@ class MatchController:
             )
             return DriveCommand(label="climb-fence-stop")
 
-        if self.state in ARENA_STATES:
-            if p.platform_state == PlatformState.OFF:
-                self._transition(RobotState.GROUND_SEARCH, "fully off platform", now)
-                return DriveCommand(label="fall-stop")
-            if p.platform_state in (
-                PlatformState.FRONT_TRANSITION,
-                PlatformState.REAR_TRANSITION,
-                PlatformState.UNKNOWN,
-            ):
-                self._transition(
-                    RobotState.PARTIAL_FALL_RECOVER,
-                    f"platform {p.platform_state.value}",
+        if self.state in edge_sensitive_states:
+            if any(edge_event):
+                self._fall_evidence_latched = True
+                self._reset_full_fall_confirmation()
+                self._start_edge_recovery(
+                    p,
                     now,
-                )
-                return DriveCommand(label="partial-fall-stop")
-            if p.front_left_edge or p.front_right_edge:
-                self._edge_pattern = (
-                    p.front_left_edge,
-                    p.front_right_edge,
-                )
-                self._transition(
-                    RobotState.EDGE_RECOVER,
-                    f"front edge {int(p.front_left_edge)}/{int(p.front_right_edge)}",
-                    now,
+                    di_pattern=edge_event,
+                    reason=(
+                        "filtered front edge "
+                        f"{int(edge_event[0])}/{int(edge_event[1])}"
+                    ),
                 )
                 return DriveCommand(label="edge-stop")
-
-        if self.state == RobotState.EDGE_RECOVER and p.platform_state in (
-            PlatformState.FRONT_TRANSITION,
-            PlatformState.REAR_TRANSITION,
-        ):
-            self._transition(
-                RobotState.PARTIAL_FALL_RECOVER,
-                "platform transition during edge recovery",
-                now,
-            )
-            return DriveCommand(label="edge-partial-stop")
+            if self._platform_stably_on(p):
+                # During EDGE_RECOVER, DI may lead the bottom grayscale by
+                # several frames. Preserve the crossing evidence until the
+                # recovery maneuver actually succeeds; otherwise a later full
+                # fall could no longer be confirmed.
+                if self.state != RobotState.EDGE_RECOVER:
+                    self._clear_fall_evidence()
+            elif self._full_fall_confirmed(p):
+                self._transition(
+                    RobotState.GROUND_SEARCH,
+                    "complete fall confirmed on distinct Mega frames",
+                    now,
+                )
+                return DriveCommand(label="full-fall-stop")
+            if (
+                self.state != RobotState.EDGE_RECOVER
+                and not (p.front_on_platform and p.rear_on_platform)
+            ):
+                self._start_edge_recovery(
+                    p,
+                    now,
+                    reason=f"grayscale edge {p.platform_state.value}",
+                )
+                return DriveCommand(label="edge-gray-stop")
         return None
 
     # ------------------------------------------------------------------
@@ -346,13 +384,14 @@ class MatchController:
             RobotState.BOOT_SELF_CHECK: self._step_boot,
             RobotState.WAIT_START_GESTURE: self._step_wait_start_gesture,
             RobotState.DEPLOY_SHOVEL: self._step_deploy_shovel,
+            RobotState.STARTUP_CLIMB_BURST: self._step_startup_climb_burst,
             RobotState.GROUND_SEARCH: self._step_ground_search,
             RobotState.ALIGN_REAR: self._step_align_rear,
             RobotState.VERIFY_PLATFORM: self._step_verify_platform,
             RobotState.CLIMB_PREPARE: self._step_climb_prepare,
             RobotState.FENCE_ESCAPE: self._step_fence_escape,
             RobotState.CLIMB_BACKWARD: self._step_climb_backward,
-            RobotState.CLIMB_CLEAR_EDGE: self._step_climb_clear_edge,
+            RobotState.CLIMB_REORIENT: self._step_climb_reorient,
             RobotState.ARENA_SEARCH: self._step_arena_search,
             RobotState.TARGET_ALIGN: self._step_target_align,
             RobotState.TARGET_CLASSIFY: self._step_target_classify,
@@ -360,7 +399,6 @@ class MatchController:
             RobotState.PUSH_GAIN_BLOCK: self._step_push_gain,
             RobotState.AVOID_BLOCK: self._step_avoid_block,
             RobotState.EDGE_RECOVER: self._step_edge_recover,
-            RobotState.PARTIAL_FALL_RECOVER: self._step_partial_fall,
             RobotState.FAULT_STOP: self._step_fault_stop,
             RobotState.MATCH_END: self._step_match_end,
         }
@@ -370,10 +408,11 @@ class MatchController:
     # Prematch states
     # ------------------------------------------------------------------
     def _step_boot(self, p, vision, now) -> DriveCommand:
-        if p.platform_state != PlatformState.UNKNOWN:
-            self._transition(
-                RobotState.WAIT_START_GESTURE, "stable Mega sensor data", now
-            )
+        # Reaching this handler already proves that a complete Mega
+        # frame was parsed. Startup must not depend on unreliable grayscale.
+        self._transition(
+            RobotState.WAIT_START_GESTURE, "Mega sensor data available", now
+        )
         return DriveCommand(label="boot-stop")
 
     def _step_wait_start_gesture(self, p, vision, now) -> DriveCommand:
@@ -390,21 +429,57 @@ class MatchController:
 
     def _step_deploy_shovel(self, p, vision, now) -> DriveCommand:
         if self._state_elapsed(now) >= self.config.timing.shovel_settle_time:
-            if p.platform_state == PlatformState.ON:
-                self._transition(RobotState.ARENA_SEARCH, "started on platform", now)
-            else:
-                self._transition(RobotState.GROUND_SEARCH, "begin platform search", now)
+            self._transition(
+                RobotState.STARTUP_CLIMB_BURST,
+                "startup shovel settled; begin blind backward climb",
+                now,
+            )
+            speed = self.config.motion.climb_speed
+            return DriveCommand(-speed, -speed, "startup-climb-backward")
         return DriveCommand(label="shovel-settle")
+
+    def _step_startup_climb_burst(self, p, vision, now) -> DriveCommand:
+        elapsed = self._state_elapsed(now)
+        if elapsed >= self.config.timing.climb_timeout:
+            self._transition(
+                RobotState.GROUND_SEARCH,
+                "startup climb exceeded total climb timeout",
+                now,
+            )
+            return DriveCommand(label="climb-timeout-stop")
+        if elapsed >= self.config.timing.startup_climb_backward_time:
+            self._transition(
+                RobotState.CLIMB_BACKWARD,
+                "startup blind backward climb complete",
+                now,
+            )
+            # The open-loop interval has ended, so apply the ordinary climb
+            # semantics to this same Mega frame instead of delaying them by
+            # one control period.
+            if p.rear_high_object:
+                self._transition(
+                    RobotState.FENCE_ESCAPE,
+                    "high rear object during climb",
+                    now,
+                )
+                return DriveCommand(label="climb-fence-stop")
+            return self._step_climb_backward(p, vision, now)
+        speed = self.config.motion.climb_speed
+        return DriveCommand(-speed, -speed, "startup-climb-backward")
 
     # ------------------------------------------------------------------
     # Ground and climbing states
     # ------------------------------------------------------------------
     def _step_ground_search(self, p, vision, now) -> DriveCommand:
-        if p.platform_state == PlatformState.ON:
+        if self._platform_stably_on(p):
             self._transition(
-                RobotState.CLIMB_CLEAR_EDGE, "platform detected while searching", now
+                RobotState.ARENA_SEARCH,
+                "stable platform detected while searching",
+                now,
             )
             return DriveCommand(label="ground-found-on-stop")
+        if p.front_on_platform and p.rear_on_platform:
+            return DriveCommand(label="ground-on-wait-stable-stop")
         if p.clusters:
             self._transition(RobotState.ALIGN_REAR, "ranging candidate found", now)
             return DriveCommand(label="candidate-stop")
@@ -475,11 +550,12 @@ class MatchController:
 
     def _step_climb_prepare(self, p, vision, now) -> DriveCommand:
         if p.front_on_platform and p.rear_on_platform:
-            self._transition(
-                RobotState.CLIMB_CLEAR_EDGE,
-                "already on platform during climb preparation",
-                now,
-            )
+            if self._platform_stably_on(p):
+                self._transition(
+                    RobotState.CLIMB_REORIENT,
+                    "already on platform during climb preparation",
+                    now,
+                )
             return DriveCommand(label="climb-prepare-already-on-stop")
 
         elapsed = self._state_elapsed(now)
@@ -514,52 +590,41 @@ class MatchController:
         return DriveCommand(label="fence-escape-complete-stop")
 
     def _step_climb_backward(self, p, vision, now) -> DriveCommand:
-        if p.rear_on_platform:
-            self._climb_seen_rear_on = True
-        if p.platform_state == PlatformState.ON and self._climb_seen_rear_on:
-            self._transition(RobotState.CLIMB_CLEAR_EDGE, "both grayscale on", now)
-            return DriveCommand(label="climb-success-stop")
-        if self._state_elapsed(now) > self.config.timing.climb_timeout:
+        started_at = self._climb_attempt_started_at
+        elapsed = (
+            self._state_elapsed(now)
+            if started_at is None
+            else max(0.0, now - started_at)
+        )
+        if elapsed >= self.config.timing.climb_timeout:
             self._transition(RobotState.GROUND_SEARCH, "climb timeout withdraw", now)
             return DriveCommand(label="climb-timeout-stop")
+        if p.front_on_platform and p.rear_on_platform:
+            # Stop as soon as both filtered grayscale channels first report
+            # tabletop.  PlatformState.ON adds distinct-frame stability while
+            # the robot is already stationary, so the 900-speed climb cannot
+            # overshoot during that confirmation delay.
+            if self._platform_stably_on(p):
+                self._transition(
+                    RobotState.CLIMB_REORIENT,
+                    "stable platform reached while climbing",
+                    now,
+                )
+                return DriveCommand(label="climb-success-stop")
+            return DriveCommand(label="climb-on-wait-stable-stop")
         speed = self.config.motion.climb_speed
         return DriveCommand(-speed, -speed, "climb-backward")
 
-    def _step_climb_clear_edge(self, p, vision, now) -> DriveCommand:
-        if p.platform_state == PlatformState.OFF:
-            self._transition(RobotState.GROUND_SEARCH, "climb clearance fell off", now)
-            return DriveCommand(label="climb-clear-fall-stop")
-        if p.platform_state == PlatformState.REAR_TRANSITION:
-            speed = self.config.motion.partial_recover_speed
-            return DriveCommand(speed, speed, "climb-clear-rear-recover")
-
-        clear = (
-            p.platform_state == PlatformState.ON
-            and not p.front_left_edge
-            and not p.front_right_edge
-        )
-        if self._held(
-            "climb-clear",
-            clear,
-            self.config.timing.climb_clear_stable_time,
+    def _step_climb_reorient(self, p, vision, now) -> DriveCommand:
+        if self._state_elapsed(now) < self.config.timing.climb_reorient_turn_time:
+            speed = self.config.motion.climb_reorient_turn_speed
+            return DriveCommand(speed, -speed, "climb-reorient-turn-right")
+        self._transition(
+            RobotState.ARENA_SEARCH,
+            "post-climb reorientation complete",
             now,
-        ):
-            self._transition(RobotState.ARENA_SEARCH, "clear of climb edge", now)
-            return DriveCommand(label="climb-clear-complete-stop")
-        if self._state_elapsed(now) > self.config.timing.climb_clear_timeout:
-            if p.platform_state == PlatformState.ON:
-                self._transition(
-                    RobotState.ARENA_SEARCH, "climb clearance timeout on platform", now
-                )
-            else:
-                self._transition(
-                    RobotState.PARTIAL_FALL_RECOVER,
-                    "climb clearance transition timeout",
-                    now,
-                )
-            return DriveCommand(label="climb-clear-timeout-stop")
-        speed = self.config.motion.climb_clear_speed
-        return DriveCommand(-speed, -speed, "climb-clear-reverse")
+        )
+        return DriveCommand(label="climb-reorient-complete-stop")
 
     # ------------------------------------------------------------------
     # Arena target behavior
@@ -746,91 +811,122 @@ class MatchController:
         timing = self.config.timing
         motion = self.config.motion
 
-        if self._edge_action_started_at is None:
-            stable_pattern = (p.front_left_edge, p.front_right_edge)
-            if stable_pattern == self._edge_pattern:
-                self._edge_recovery_confirm_count += 1
-            else:
-                self._edge_recovery_confirm_count = 0
+        stable_on = self._platform_stably_on(p)
 
-            if (
-                self._edge_recovery_confirm_count
-                >= self.config.sensors.edge_recovery_confirm_frames
-            ):
-                self._edge_action_started_at = now
-
-        if self._state_elapsed(now) > timing.edge_recover_timeout:
-            if p.platform_state == PlatformState.ON:
-                self._transition(
-                    RobotState.ARENA_SEARCH, "edge recovery timeout but on platform", now
-                )
-            else:
-                self._transition(
-                    RobotState.PARTIAL_FALL_RECOVER,
-                    "edge recovery timeout",
+        # A grayscale-triggered backward withdrawal leaves the nose pointing
+        # at the edge it just escaped.  Once stable tabletop is confirmed,
+        # finish the dedicated turn before allowing forward arena patrol.
+        if self._edge_turn_started_at is not None:
+            if not stable_on:
+                self._start_edge_recovery(
+                    p,
                     now,
+                    reason="platform indication changed during recovery turn",
                 )
-            return DriveCommand(label="edge-recovery-timeout-stop")
+                return DriveCommand(label="edge-turn-replan-stop")
+            turn_elapsed = max(0.0, now - self._edge_turn_started_at)
+            if turn_elapsed < timing.edge_turn_time:
+                speed = motion.edge_turn_speed * self._edge_turn_sign
+                return DriveCommand(speed, -speed, "edge-gray-turn-inward")
+            self._clear_fall_evidence()
+            self._transition(
+                RobotState.ARENA_SEARCH,
+                "grayscale edge recovery turn complete",
+                now,
+            )
+            return DriveCommand(label="edge-recovery-complete-stop")
 
         if self._edge_action_started_at is None:
-            return DriveCommand(label="edge-recovery-confirm-stop")
+            self._start_edge_recovery(
+                p,
+                now,
+                reason="initialize edge recovery",
+            )
+            return DriveCommand(label="edge-recovery-initialize-stop")
 
         elapsed = max(0.0, now - self._edge_action_started_at)
-        if elapsed < timing.edge_stop_time:
-            return DriveCommand(label="edge-immediate-stop")
-        if elapsed < timing.edge_stop_time + timing.edge_reverse_time:
-            speed = motion.edge_reverse_speed
-            return DriveCommand(-speed, -speed, "edge-short-reverse")
+        if elapsed >= timing.edge_recover_timeout:
+            if stable_on:
+                if (
+                    self._edge_recovery_mode == "gray"
+                    and self._edge_recovery_drive_direction < 0
+                ):
+                    self._edge_turn_started_at = now
+                    return DriveCommand(label="edge-safe-before-turn-stop")
+                self._clear_fall_evidence()
+                self._transition(
+                    RobotState.ARENA_SEARCH,
+                    "edge recovery timeout after stable platform return",
+                    now,
+                )
+                return DriveCommand(label="edge-recovery-complete-stop")
 
-        left, right = self._edge_pattern
-        if left and not right:
-            turn_sign = 1
-        elif right and not left:
-            turn_sign = -1
-        else:
-            # With both front edge sensors active, use a deterministic
-            # clockwise/right turn. The angle remains a calibration parameter.
-            turn_sign = 1
-        speed = motion.edge_turn_speed * turn_sign
-        turn_complete = elapsed >= (
-            timing.edge_stop_time + timing.edge_reverse_time + timing.edge_turn_time
-        )
-        clear = (
-            p.platform_state == PlatformState.ON
-            and not p.front_left_edge
-            and not p.front_right_edge
-        )
-        if turn_complete and clear:
-            self._transition(RobotState.ARENA_SEARCH, "edge recovery complete", now)
-            return DriveCommand(label="edge-recovery-complete-stop")
-        return DriveCommand(speed, -speed, "edge-turn-away")
-
-    def _step_partial_fall(self, p, vision, now) -> DriveCommand:
-        if p.platform_state == PlatformState.ON:
-            self._transition(RobotState.ARENA_SEARCH, "partial fall recovered", now)
-            return DriveCommand(label="partial-recovered-stop")
-        if p.platform_state == PlatformState.OFF:
-            self._transition(RobotState.GROUND_SEARCH, "partial fall became full fall", now)
-            return DriveCommand(label="partial-full-fall-stop")
-        if self._state_elapsed(now) > self.config.timing.partial_recover_timeout:
-            self._fault_started = now
-            self._transition(
-                RobotState.FAULT_STOP, "partial fall recovery timeout", now
+            retry_direction = None
+            if not p.front_on_platform and not p.rear_on_platform:
+                # With no geometric clue, reverse the previous attempt rather
+                # than repeating a possibly wrong open-loop guess forever.
+                retry_direction = -self._edge_recovery_drive_direction
+            self._start_edge_recovery(
+                p,
+                now,
+                reason="edge recovery timeout; re-evaluate",
+                drive_direction=retry_direction,
             )
-            return DriveCommand(label="partial-timeout-stop")
+            return DriveCommand(label="edge-recovery-timeout-replan-stop")
 
-        speed = self.config.motion.partial_recover_speed
-        if p.platform_state == PlatformState.FRONT_TRANSITION:
-            return DriveCommand(-speed, -speed, "front-transition-reverse")
-        if p.platform_state == PlatformState.REAR_TRANSITION:
-            return DriveCommand(speed, speed, "rear-transition-forward")
-        return DriveCommand(label="partial-unknown-stop")
+        if self._edge_recovery_mode == "di":
+            if elapsed < timing.edge_stop_time:
+                return DriveCommand(label="edge-immediate-stop")
+            if elapsed < timing.edge_stop_time + timing.edge_reverse_time:
+                speed = motion.edge_reverse_speed
+                return DriveCommand(-speed, -speed, "edge-short-reverse")
+            if elapsed < (
+                timing.edge_stop_time
+                + timing.edge_reverse_time
+                + timing.edge_turn_time
+            ):
+                speed = motion.edge_turn_speed * self._edge_turn_sign
+                return DriveCommand(speed, -speed, "edge-turn-away")
+            if stable_on:
+                self._clear_fall_evidence()
+                self._transition(
+                    RobotState.ARENA_SEARCH,
+                    "DI edge recovery complete",
+                    now,
+                )
+                return DriveCommand(label="edge-recovery-complete-stop")
+            self._start_edge_recovery(
+                p,
+                now,
+                reason="DI maneuver complete; continue by grayscale",
+            )
+            return DriveCommand(label="edge-di-to-gray-stop")
+
+        if elapsed < timing.edge_stop_time:
+            return DriveCommand(label="edge-gray-immediate-stop")
+        if p.front_on_platform and p.rear_on_platform:
+            if not stable_on:
+                return DriveCommand(label="edge-gray-wait-stable-stop")
+            if self._edge_recovery_drive_direction < 0:
+                self._edge_turn_started_at = now
+                return DriveCommand(label="edge-safe-before-turn-stop")
+            self._clear_fall_evidence()
+            self._transition(
+                RobotState.ARENA_SEARCH,
+                "forward grayscale recovery reached stable platform",
+                now,
+            )
+            return DriveCommand(label="edge-recovery-complete-stop")
+
+        speed = (
+            motion.edge_gray_recover_speed
+            * self._edge_recovery_drive_direction
+        )
+        direction = "forward" if speed > 0 else "backward"
+        return DriveCommand(speed, speed, f"edge-gray-recover-{direction}")
 
     def _step_fault_stop(self, p, vision, now) -> DriveCommand:
-        healthy = (
-            p.sensor_age <= self.config.timing.sensor_warning_after
-            and p.platform_state != PlatformState.UNKNOWN
-        )
+        healthy = p.sensor_age <= self.config.timing.sensor_warning_after
         if self._held(
             "fault-healthy",
             healthy,
@@ -839,13 +935,23 @@ class MatchController:
         ):
             if not self.match_started:
                 next_state = RobotState.WAIT_START_GESTURE
-            elif p.platform_state == PlatformState.ON:
+                self._transition(next_state, "sensor fault recovered", now)
+            elif self._fault_previous_state in GROUND_STATES:
+                self._transition(
+                    RobotState.GROUND_SEARCH,
+                    "ground-state sensor fault recovered",
+                    now,
+                )
+            elif self._platform_stably_on(p):
+                self._clear_fall_evidence()
                 next_state = RobotState.ARENA_SEARCH
-            elif p.platform_state == PlatformState.OFF:
-                next_state = RobotState.GROUND_SEARCH
+                self._transition(next_state, "sensor fault recovered", now)
             else:
-                next_state = RobotState.PARTIAL_FALL_RECOVER
-            self._transition(next_state, "sensor fault recovered", now)
+                self._start_edge_recovery(
+                    p,
+                    now,
+                    reason="arena sensor fault recovered outside stable platform",
+                )
         return DriveCommand(label="fault-stop")
 
     def _step_match_end(self, p, vision, now) -> DriveCommand:
@@ -855,11 +961,13 @@ class MatchController:
     # Helpers
     # ------------------------------------------------------------------
     def _transition(self, state: RobotState, reason: str, now: float) -> None:
+        previous_state = self.state
         entering_avoid = (
-            state == RobotState.AVOID_BLOCK and self.state != RobotState.AVOID_BLOCK
+            state == RobotState.AVOID_BLOCK
+            and previous_state != RobotState.AVOID_BLOCK
         )
-        if self.state != state:
-            print(f"State:{self.state.value}->{state.value} {reason}")
+        if previous_state != state:
+            print(f"State:{previous_state.value}->{state.value} {reason}")
         if entering_avoid:
             # Consume the direction on entry so an edge-preempted attempt still
             # causes the following avoidance attempt to choose the other side.
@@ -876,15 +984,36 @@ class MatchController:
             self._target_last_seen = now
         if state == RobotState.PUSH_GAIN_BLOCK:
             self._target_last_seen = now
-        if state == RobotState.CLIMB_BACKWARD:
-            self._climb_seen_rear_on = False
+        if state == RobotState.STARTUP_CLIMB_BURST:
+            self._climb_attempt_started_at = now
+        elif state == RobotState.CLIMB_BACKWARD:
+            if previous_state == RobotState.STARTUP_CLIMB_BURST:
+                # Do not inherit static-feature time accumulated during the
+                # deliberately unmonitored open-loop burst.
+                self._feature_changed_at = now
+            else:
+                self._climb_attempt_started_at = now
+        elif previous_state in (
+            RobotState.STARTUP_CLIMB_BURST,
+            RobotState.CLIMB_BACKWARD,
+        ):
+            self._climb_attempt_started_at = None
         if state == RobotState.FAULT_STOP:
-            self._fault_started = now
-        if state == RobotState.EDGE_RECOVER:
-            # The triggering stable edge sample is the first confirmation
-            # frame; subsequent cycles provide the remaining confirmations.
-            self._edge_recovery_confirm_count = 1
+            if previous_state != RobotState.FAULT_STOP:
+                self._fault_previous_state = previous_state
+            self._reset_full_fall_confirmation()
+        if (
+            previous_state == RobotState.EDGE_RECOVER
+            and state != RobotState.EDGE_RECOVER
+        ):
+            self._edge_recovery_mode = "none"
             self._edge_action_started_at = None
+            self._edge_turn_started_at = None
+        if (
+            state == RobotState.GROUND_SEARCH
+            and previous_state != RobotState.GROUND_SEARCH
+        ):
+            self._clear_fall_evidence()
         self._publish_status(force=True)
 
     def _state_elapsed(self, now: float) -> float:
@@ -896,6 +1025,118 @@ class MatchController:
             return False
         since = self._condition_since.setdefault(key, now)
         return now - since >= duration
+
+    @staticmethod
+    def _platform_stably_on(p: PerceptionSnapshot) -> bool:
+        # PlatformState.ON is already confirmed by distinct Mega frames in the
+        # perception layer. DI is deliberately absent: a stuck/noisy DI must
+        # not prevent the robot from resuming once grayscale proves it is safe.
+        return (
+            p.platform_state == PlatformState.ON
+            and p.front_on_platform
+            and p.rear_on_platform
+        )
+
+    def _consume_filtered_edge_event(
+        self,
+        p: PerceptionSnapshot,
+        *,
+        enabled: bool,
+    ) -> tuple[bool, bool]:
+        pattern = (p.front_left_edge, p.front_right_edge)
+
+        if not any(pattern):
+            if p.sequence != self._edge_event_last_sequence:
+                self._edge_event_last_sequence = p.sequence
+                self._edge_event_armed = True
+            return (False, False)
+
+        # Do not consume an active level while platform/edge control is
+        # intentionally disabled (especially during blind/normal climbing).
+        # If the level persists into an edge-sensitive state, even the same
+        # Mega frame can then generate the one permitted event.
+        if not enabled or p.sequence == self._edge_event_last_sequence:
+            return (False, False)
+
+        self._edge_event_last_sequence = p.sequence
+        if not self._edge_event_armed:
+            return (False, False)
+        self._edge_event_armed = False
+        return pattern
+
+    def _gray_recovery_direction(self, p: PerceptionSnapshot) -> int:
+        if not p.front_on_platform and p.rear_on_platform:
+            return -1
+        if p.front_on_platform and not p.rear_on_platform:
+            return 1
+        if self._last_linear_direction != 0:
+            return -self._last_linear_direction
+        return -1
+
+    @staticmethod
+    def _turn_sign_for_edge(pattern: tuple[bool, bool]) -> int:
+        left, right = pattern
+        if left and not right:
+            return 1
+        if right and not left:
+            return -1
+        # Both or neither: deterministic clockwise/right turn.
+        return 1
+
+    def _start_edge_recovery(
+        self,
+        p: PerceptionSnapshot,
+        now: float,
+        *,
+        reason: str,
+        di_pattern: Optional[tuple[bool, bool]] = None,
+        drive_direction: Optional[int] = None,
+    ) -> None:
+        current_pattern = (p.front_left_edge, p.front_right_edge)
+        if di_pattern is not None:
+            self._edge_recovery_mode = "di"
+            self._edge_pattern = di_pattern
+            self._edge_recovery_drive_direction = -1
+            self._edge_turn_sign = self._turn_sign_for_edge(di_pattern)
+        else:
+            self._edge_recovery_mode = "gray"
+            self._edge_pattern = current_pattern
+            if drive_direction not in (-1, 1):
+                drive_direction = self._gray_recovery_direction(p)
+            self._edge_recovery_drive_direction = drive_direction
+            self._edge_turn_sign = self._turn_sign_for_edge(current_pattern)
+        self._edge_action_started_at = now
+        self._edge_turn_started_at = None
+        # Set the plan before publishing the transition status so telemetry
+        # cannot briefly expose fields from the previous attempt.
+        self._transition(RobotState.EDGE_RECOVER, reason, now)
+
+    def _reset_full_fall_confirmation(self) -> None:
+        self._full_fall_confirm_count = 0
+        self._full_fall_last_sequence = None
+
+    def _clear_fall_evidence(self) -> None:
+        self._fall_evidence_latched = False
+        self._reset_full_fall_confirmation()
+
+    def _full_fall_confirmed(self, p: PerceptionSnapshot) -> bool:
+        candidate = (
+            self._fall_evidence_latched
+            and not p.front_on_platform
+            and not p.rear_on_platform
+            and not p.front_left_edge
+            and not p.front_right_edge
+        )
+        if not candidate:
+            self._reset_full_fall_confirmation()
+            return False
+        if p.sequence != self._full_fall_last_sequence:
+            self._full_fall_last_sequence = p.sequence
+            self._full_fall_confirm_count += 1
+        return (
+            self._full_fall_confirm_count
+            >= self.config.sensors.full_fall_confirm_frames
+        )
 
     @staticmethod
     def _turn_for_error(error: float, speed: int, label: str) -> DriveCommand:
@@ -939,11 +1180,16 @@ class MatchController:
         if not moving:
             self._feature_changed_at = now
             return command
+        if self.state == RobotState.STARTUP_CLIMB_BURST:
+            # This one-shot phase is intentionally open-loop and already has a
+            # bounded duration. Static ranging/grayscale data must not turn a
+            # deliberate startup climb into a false stuck recovery.
+            self._feature_changed_at = now
+            return command
         watched_states = {
             RobotState.ALIGN_REAR,
             RobotState.VERIFY_PLATFORM,
             RobotState.CLIMB_PREPARE,
-            RobotState.CLIMB_BACKWARD,
             RobotState.ATTACK_ENEMY,
             RobotState.PUSH_GAIN_BLOCK,
         }
@@ -991,6 +1237,11 @@ class MatchController:
             "match_running": self.running,
             "match_started": self.match_started,
             "match_elapsed": match_elapsed,
+            "startup_climb_active": self.state == RobotState.STARTUP_CLIMB_BURST,
+            "startup_climb_pending": self.state in (
+                RobotState.DEPLOY_SHOVEL,
+                RobotState.STARTUP_CLIMB_BURST,
+            ),
             "command": {
                 "left": self.last_command.left_speed,
                 "right": self.last_command.right_speed,
@@ -1022,6 +1273,17 @@ class MatchController:
                 "platform_state": p.platform_state.value,
                 "front_on_platform": p.front_on_platform,
                 "rear_on_platform": p.rear_on_platform,
+                "edge_recovery_mode": self._edge_recovery_mode,
+                "edge_recovery_drive_direction": (
+                    self._edge_recovery_drive_direction
+                ),
+                "edge_pattern": [int(value) for value in self._edge_pattern],
+                "edge_turn_sign": self._edge_turn_sign,
+                "edge_event_armed": self._edge_event_armed,
+                "fall_evidence_latched": self._fall_evidence_latched,
+                "full_fall_confirm_count": self._full_fall_confirm_count,
+                "last_linear_direction": self._last_linear_direction,
+                "fault_previous_state": self._fault_previous_state.value,
                 "front_left_edge": p.front_left_edge,
                 "front_right_edge": p.front_right_edge,
                 "rear_high_object": p.rear_high_object,

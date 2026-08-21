@@ -99,7 +99,7 @@ class PerceptionSnapshot:
                     self.filtered_analog[:REAR_HIGH_ANALOG_INDEX]
                 )
             ),
-            self.raw_digital,
+            (self.front_left_edge, self.front_right_edge),
             self.platform_state,
             self.rear_high_object,
         )

@@ -61,24 +61,27 @@ class SensorConfig:
     start_hand_enter: int = 400
     start_hand_exit: int = 350
 
-    # Measured grayscale values are about 300 on the platform and 900 off it.
-    # Enter the on-platform state at <= 500, then retain it through the
-    # 500..700 hysteresis band until the reading rises above 700.
-    gray_on_is_high: bool = False
-    gray_on_enter: int = 500
-    gray_off_exit: int = 700
+    # Current calibration uses a high ADC value for the on-platform state.
+    # Enter ON at >= 650, then retain it through the 600..650 hysteresis band
+    # until the reading falls below 600.
+    gray_on_is_high: bool = True
+    gray_on_enter: int = 650
+    gray_off_exit: int = 600
     # Temporary bench mode while the grayscale sensors are unusable. This
     # keeps platform state ON but preserves raw grayscale telemetry.
     force_platform_on: bool = False
 
     edge_confirm_frames: int = 2
-    edge_recovery_confirm_frames: int = 3
     edge_clear_frames: int = 3
     # Assert rear-high detection on one A14 frame, then require several
     # consecutive inactive frames before clearing the conservative state.
     rear_high_confirm_frames: int = 1
     rear_high_clear_frames: int = 3
     platform_confirm_frames: int = 3
+    # After a filtered front-DI event, require this many distinct Mega frames
+    # with both grayscale sensors OFF and both filtered DI inputs clear before
+    # a complete fall is confirmed. No prior on-platform state is required.
+    full_fall_confirm_frames: int = 3
     # Rear low-object sector used for platform alignment/verification.
     rear_platform_ir_indices: tuple[int, ...] = (5, 6, 7)
     alignment_tolerance_deg: float = 18.0
@@ -101,7 +104,7 @@ class MotionConfig:
     platform_probe_speed: int = 300
     climb_prepare_speed: int = 500
     climb_speed: int = 900
-    climb_clear_speed: int = 300
+    climb_reorient_turn_speed: int = 700
     arena_patrol_speed: int = 600
     attack_speed: int = 700
     attack_min_speed: int = 350
@@ -110,7 +113,7 @@ class MotionConfig:
     avoid_depart_speed: int = 500
     edge_reverse_speed: int = 600
     edge_turn_speed: int = 700
-    partial_recover_speed: int = 500
+    edge_gray_recover_speed: int = 500
     target_turn_gain: float = 5.0
 
 
@@ -131,6 +134,12 @@ class TimingConfig:
     match_duration: float = 100000.0
 
     shovel_settle_time: float = 0.60
+    # The robot is manually aligned at the match start. After the shovel has
+    # settled, drive backward open-loop for this long before entering normal
+    # CLIMB_BACKWARD. Platform, edge and rear-object readings are deliberately
+    # ignored during this one-shot interval. The interval counts toward the
+    # total climb_timeout below.
+    startup_climb_backward_time: float = 1.00
 
     ground_candidate_confirm: float = 0.10
     # Ignore a brief ranging dropout while turning a candidate toward A6.
@@ -143,8 +152,9 @@ class TimingConfig:
     fence_escape_forward_time: float = 1.00
     fence_escape_turn_time: float = 2.00
     climb_timeout: float = 2.20
-    climb_clear_stable_time: float = 0.20
-    climb_clear_timeout: float = 1.20
+    # Rear-first climbing leaves the nose pointing at the entry edge. Turn
+    # roughly 180 degrees before starting the forward arena patrol.
+    climb_reorient_turn_time: float = 1.40
 
     target_center_confirm_time: float = 0.08
     target_align_timeout: float = 3.00
@@ -160,8 +170,9 @@ class TimingConfig:
     edge_stop_time: float = 0.05
     edge_reverse_time: float = 0.50
     edge_turn_time: float = 0.70
+    # Per-attempt timeout. Ambiguous recovery is replanned rather than ending
+    # in a permanent fault stop.
     edge_recover_timeout: float = 3.00
-    partial_recover_timeout: float = 1.20
     fault_recover_time: float = 0.50
     stuck_timeout: float = 2.00
 
@@ -222,4 +233,4 @@ class RobotConfig:
     vision: VisionConfig = field(default_factory=VisionConfig)
 
 
-DEFAULT_CONFIG = RobotConfig(sensors=SensorConfig(force_platform_on=True))
+DEFAULT_CONFIG = RobotConfig(sensors=SensorConfig(force_platform_on=False))
