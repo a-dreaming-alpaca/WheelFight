@@ -251,6 +251,10 @@ class PerceptionEngine:
             self.config.gray_off_exit,
             self.config.gray_on_is_high,
         )
+        if self.config.force_platform_on:
+            self._gray_on[0] = True
+            self._gray_on[1] = True
+
 
         self._update_edge(0, frame.digital[0] == 1)
         self._update_edge(1, frame.digital[1] == 1)

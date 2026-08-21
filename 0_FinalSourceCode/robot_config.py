@@ -67,6 +67,9 @@ class SensorConfig:
     gray_on_is_high: bool = False
     gray_on_enter: int = 500
     gray_off_exit: int = 700
+    # Temporary bench mode while the grayscale sensors are unusable. This
+    # keeps platform state ON but preserves raw grayscale telemetry.
+    force_platform_on: bool = False
 
     edge_confirm_frames: int = 2
     edge_recovery_confirm_frames: int = 3
@@ -219,4 +222,4 @@ class RobotConfig:
     vision: VisionConfig = field(default_factory=VisionConfig)
 
 
-DEFAULT_CONFIG = RobotConfig()
+DEFAULT_CONFIG = RobotConfig(sensors=SensorConfig(force_platform_on=True))
