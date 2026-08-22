@@ -65,8 +65,8 @@ class SensorConfig:
     # Enter ON at >= 650, then retain it through the 600..650 hysteresis band
     # until the reading falls below 600.
     gray_on_is_high: bool = True
-    gray_on_enter: int = 650
-    gray_off_exit: int = 600
+    gray_on_enter: int = 550
+    gray_off_exit: int = 500
     # Temporary bench mode while the grayscale sensors are unusable. This
     # keeps platform state ON but preserves raw grayscale telemetry.
     force_platform_on: bool = False
